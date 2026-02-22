@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Voice AI",
+    "slug": "voice-interface",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0a0a0a"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.voiceinterface.app",
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "Allow Voice AI to use speech recognition for voice commands.",
+        "NSMicrophoneUsageDescription": "Allow Voice AI to use the microphone for voice input."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0a0a0a"
+      },
+      "permissions": ["android.permission.RECORD_AUDIO"]
+    },
+    "plugins": []
+  }
+}

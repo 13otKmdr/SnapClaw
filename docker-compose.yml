@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - API_KEYS=${API_KEYS:-test-key}
+    volumes:
+      - ./backend:/app
+    restart: unless-stopped
+
+  # Optional: Redis for session storage
+  # redis:
+  #   image: redis:alpine
+  #   ports:
+  #     - "6379:6379"
