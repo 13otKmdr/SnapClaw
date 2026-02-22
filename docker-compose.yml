@@ -1,19 +1,74 @@
-version: '3.8'
+version: "3.9"
 
 services:
+  # Caddy reverse proxy with automatic SSL
+  caddy:
+    image: caddy:2.7.6-alpine
+    container_name: voice-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - ./logs:/var/log/caddy
+    depends_on:
+      - backend
+    networks:
+      - voice-network
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # FastAPI backend
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: voice-backend
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - AGENT_ZERO_URL=${AGENT_ZERO_URL:-http://agent-zero:50001}
+      - OPENCLAW_URL=${OPENCLAW_URL:-http://openclaw:8080}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+    volumes:
+      - ./backend:/app/backend:ro
+      - ./logs:/app/logs
     ports:
       - "8000:8000"
-    environment:
-      - PORT=8000
-      - API_KEYS=${API_KEYS:-test-key}
-    volumes:
-      - ./backend:/app
-    restart: unless-stopped
+    networks:
+      - voice-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # Optional: Redis for session storage
-  # redis:
-  #   image: redis:alpine
-  #   ports:
-  #     - "6379:6379"
+  # Redis for session management
+  redis:
+    image: redis:7.2-alpine
+    container_name: voice-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - voice-network
+    command: redis-server --appendonly yes
+
+networks:
+  voice-network:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
+  redis_data:
