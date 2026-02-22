@@ -1,428 +1,352 @@
 """
-Voice Interface Backend - FastAPI Server
-With Authentication, SSL, and Real Integrations
+Voice Interface — FastAPI backend
+Pure relay: voice → STT → Agent Zero → TTS → voice
+
+WebSocket protocol  (ws://host:8000/ws)
+───────────────────
+Client → Server
+  { type: "auth",         token: str }
+  { type: "audio_chunk",  data: str }          base64 audio bytes
+  { type: "audio_end" }                         VAD silence detected → trigger STT
+  { type: "text_message", text: str }           text input (fallback / debug)
+  { type: "select_chat",  chat_id: str }
+  { type: "new_chat",     name: str }
+  { type: "list_chats" }
+
+Server → Client
+  { type: "auth_ok" }
+  { type: "auth_error",   message: str }
+  { type: "transcript",   text: str }           what Whisper heard
+  { type: "agent_update", text: str,            streaming log line from Agent Zero
+                          partial: true }
+  { type: "agent_done",   text: str }           final agent response
+  { type: "audio_chunk",  data: str }           base64 MP3 chunk
+  { type: "audio_end" }                         TTS stream finished
+  { type: "chat_list",    chats: [...] }
+  { type: "chat_created", chat: {...} }
+  { type: "error",        message: str }
 """
-import os
-from datetime import datetime
-from typing import Dict, Any, Optional, List
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
 import asyncio
-import json
+import base64
+import logging
+from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Optional
 
-# Import integrations
-from integrations.telegram import TelegramIntegration, get_telegram_client
-from integrations.agent_zero import AgentZeroIntegration, get_agent_zero_client
-from integrations.openclaw import OpenClawIntegration, get_openclaw_client
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 
-# Import auth
-from auth import (
-    User, UserCreate, UserLogin, Token,
-    create_user, authenticate_user, create_access_token,
-    get_current_user, create_api_key, verify_api_key, api_keys_db
-)
+from .config import settings
+from .adapters.agent_zero import AgentZeroAdapter
+from .voice.stt import transcribe_audio
+from .voice.tts import stream_tts
+from .memory.session import store as session_store
+from .memory.compressor import maybe_compress, build_context_for_agent
 
-# Configuration
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-AGENT_ZERO_URL = os.environ.get("AGENT_ZERO_URL", "http://localhost:50001")
-OPENCLAW_URL = os.environ.get("OPENCLAW_URL", "http://localhost:8080")
-JWT_SECRET = os.environ.get("JWT_SECRET_KEY", "change-me-in-production")
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
-# Lifespan manager
+# ── Lifespan ──────────────────────────────────────────────────────────
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    print("🚀 Voice Interface Backend starting...")
+    log.info("Voice relay starting — Agent Zero at %s", settings.agent_zero_url)
+    # Quick health check at startup (non-blocking)
+    asyncio.create_task(_startup_health_check())
     yield
-    # Shutdown
-    print("👋 Shutting down...")
-    tg = get_telegram_client()
-    az = get_agent_zero_client()
-    oc = get_openclaw_client()
-    await tg.close()
-    await az.close()
-    await oc.close()
+    log.info("Voice relay shutting down")
 
-# Create app
+
+async def _startup_health_check():
+    adapter = AgentZeroAdapter()
+    ok = await adapter.health_check()
+    status = "✅ reachable" if ok else "⚠️  unreachable (check AGENT_ZERO_URL / API key)"
+    log.info("Agent Zero: %s", status)
+
+
+# ── App ───────────────────────────────────────────────────────────────
+
 app = FastAPI(
-    title="Voice Interface API",
-    description="Voice-first AI assistant with Telegram, Agent Zero, and OpenClaw integration",
-    version="2.0.0",
+    title="Voice Relay",
+    description="Relay voice ↔ Agent Zero",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure for production
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# WebSocket manager
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}
-    
-    async def connect(self, session_id: str, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections[session_id] = websocket
-    
-    def disconnect(self, session_id: str):
-        if session_id in self.active_connections:
-            del self.active_connections[session_id]
-    
-    async def send_json(self, session_id: str, data: dict):
-        if session_id in self.active_connections:
-            await self.active_connections[session_id].send_json(data)
-    
-    async def broadcast(self, data: dict):
-        for ws in self.active_connections.values():
-            await ws.send_json(data)
 
-manager = ConnectionManager()
+# ── REST ──────────────────────────────────────────────────────────────
 
-# Models
-class VoiceRequest(BaseModel):
-    text: str
-    session_id: str
-    context: Optional[Dict[str, Any]] = None
-
-class VoiceResponse(BaseModel):
-    text: str
-    intent: str
-    confidence: float
-    action: Optional[Dict[str, Any]] = None
-    requires_confirmation: bool = False
-    entities: Optional[Dict[str, Any]] = None
-
-class CommandRequest(BaseModel):
-    command: str
-    target: Optional[str] = None
-    params: Optional[Dict[str, Any]] = None
-
-class TelegramSendRequest(BaseModel):
-    chat_id: int
-    text: str
-    parse_mode: str = "Markdown"
-
-# API Key authentication
-bearer_scheme = HTTPBearer(auto_error=False)
-
-async def get_api_key_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-    api_key: str = Query(None),
-) -> Optional[Dict]:
-    # Try Bearer token first
-    if credentials:
-        token = credentials.credentials
-        # Check if it's an API key
-        if token.startswith("vi_"):
-            return verify_api_key(token)
-        # Otherwise try JWT
-        user = await get_current_user(credentials)
-        if user:
-            return {"user_id": user.id, "username": user.username}
-    # Try query param
-    if api_key:
-        return verify_api_key(api_key)
-    return None
-
-# ============ AUTH ENDPOINTS ============
-
-@app.post("/api/auth/register", response_model=Token, tags=["Auth"])
-async def register(user_data: UserCreate):
-    """Register a new user."""
-    # Check if email exists
-    for user in api_keys_db.values():
-        if user.get("email") == user_data.email:
-            raise HTTPException(400, "Email already registered")
-    
-    user = create_user(user_data.email, user_data.username, user_data.password)
-    token = create_access_token({"sub": user.id, "email": user.email})
-    
-    return Token(
-        access_token=token,
-        user={"id": user.id, "email": user.email, "username": user.username}
-    )
-
-@app.post("/api/auth/login", response_model=Token, tags=["Auth"])
-async def login(credentials: UserLogin):
-    """Login and get JWT token."""
-    user = authenticate_user(credentials.email, credentials.password)
-    if not user:
-        raise HTTPException(401, "Invalid credentials")
-    
-    token = create_access_token({"sub": user.id, "email": user.email})
-    
-    return Token(
-        access_token=token,
-        user={"id": user.id, "email": user.email, "username": user.username}
-    )
-
-@app.post("/api/auth/api-keys", tags=["Auth"])
-async def create_new_api_key(
-    name: str,
-    current_user: Dict = Depends(get_api_key_user),
-):
-    """Create a new API key."""
-    if not current_user:
-        raise HTTPException(401, "Authentication required")
-    
-    key = create_api_key(current_user["user_id"], name)
-    return {"api_key": key, "name": name}
-
-@app.get("/api/auth/me", tags=["Auth"])
-async def get_me(current_user: Dict = Depends(get_api_key_user)):
-    """Get current user info."""
-    if not current_user:
-        raise HTTPException(401, "Not authenticated")
-    return current_user
-
-# ============ VOICE ENDPOINTS ============
-
-@app.post("/api/voice/process", response_model=VoiceResponse, tags=["Voice"])
-async def process_voice(
-    request: VoiceRequest,
-    user: Optional[Dict] = Depends(get_api_key_user),
-):
-    """Process voice input and return response."""
-    text = request.text.lower()
-    
-    # Simple intent classification
-    intent = "CHAT"
-    confidence = 0.9
-    entities = {}
-    action = None
-    requires_confirmation = False
-    
-    # Check for commands
-    if any(word in text for word in ["send", "telegram", "message"]):
-        intent = "COMMAND"
-        entities["action"] = "telegram_send"
-        requires_confirmation = True
-        action = {"type": "telegram_send", "status": "pending"}
-    
-    elif any(word in text for word in ["execute", "run", "agent zero"]):
-        intent = "COMMAND"
-        entities["action"] = "agent_execute"
-        requires_confirmation = True
-        action = {"type": "agent_execute", "status": "pending"}
-    
-    elif any(word in text for word in ["scan", "nmap", "security"]):
-        intent = "COMMAND"
-        entities["action"] = "openclaw_scan"
-        requires_confirmation = True
-        action = {"type": "openclaw_scan", "status": "pending"}
-    
-    response_text = generate_response(text, intent, entities)
-    
-    return VoiceResponse(
-        text=response_text,
-        intent=intent,
-        confidence=confidence,
-        action=action,
-        requires_confirmation=requires_confirmation,
-        entities=entities,
-    )
-
-@app.post("/api/voice/confirm", tags=["Voice"])
-async def confirm_action(
-    action_type: str,
-    params: Dict[str, Any],
-    confirmed: bool = True,
-    user: Optional[Dict] = Depends(get_api_key_user),
-):
-    """Confirm and execute a pending action."""
-    if not confirmed:
-        return {"status": "cancelled", "message": "Action cancelled"}
-    
-    result = await execute_action(action_type, params)
-    return {"status": "completed", "result": result}
-
-# ============ TELEGRAM ENDPOINTS ============
-
-@app.get("/api/telegram/dialogs", tags=["Telegram"])
-async def get_telegram_dialogs(user: Optional[Dict] = Depends(get_api_key_user)):
-    """Get list of Telegram chats/dialogs."""
-    tg = get_telegram_client()
-    try:
-        dialogs = await tg.get_dialogs()
-        return {"dialogs": dialogs}
-    except Exception as e:
-        raise HTTPException(500, f"Telegram error: {str(e)}")
-
-@app.get("/api/telegram/chat/{chat_id}", tags=["Telegram"])
-async def get_telegram_chat(chat_id: int, user: Optional[Dict] = Depends(get_api_key_user)):
-    """Get Telegram chat info."""
-    tg = get_telegram_client()
-    try:
-        chat = await tg.get_chat(chat_id)
-        return chat
-    except Exception as e:
-        raise HTTPException(500, f"Telegram error: {str(e)}")
-
-@app.post("/api/telegram/send", tags=["Telegram"])
-async def send_telegram_message(
-    request: TelegramSendRequest,
-    user: Optional[Dict] = Depends(get_api_key_user),
-):
-    """Send a message via Telegram."""
-    tg = get_telegram_client()
-    try:
-        result = await tg.send_message(request.chat_id, request.text, request.parse_mode)
-        return {"status": "sent", "message_id": result.get("message_id")}
-    except Exception as e:
-        raise HTTPException(500, f"Telegram error: {str(e)}")
-
-# ============ AGENT ZERO ENDPOINTS ============
-
-@app.post("/api/agent/execute", tags=["Agent Zero"])
-async def execute_agent_task(
-    request: CommandRequest,
-    user: Optional[Dict] = Depends(get_api_key_user),
-):
-    """Execute a task via Agent Zero."""
-    az = get_agent_zero_client()
-    try:
-        result = await az.execute_task(request.command, request.params.get("context"))
-        return result
-    except Exception as e:
-        raise HTTPException(500, f"Agent Zero error: {str(e)}")
-
-@app.get("/api/agent/capabilities", tags=["Agent Zero"])
-async def get_agent_capabilities(user: Optional[Dict] = Depends(get_api_key_user)):
-    """Get Agent Zero capabilities."""
-    az = get_agent_zero_client()
-    return await az.list_capabilities()
-
-@app.get("/api/agent/health", tags=["Agent Zero"])
-async def agent_health():
-    """Check Agent Zero connection."""
-    az = get_agent_zero_client()
-    is_healthy = await az.health_check()
-    return {"healthy": is_healthy}
-
-# ============ OPENCLAW ENDPOINTS ============
-
-@app.get("/api/openclaw/tools", tags=["OpenClaw"])
-async def get_openclaw_tools(user: Optional[Dict] = Depends(get_api_key_user)):
-    """Get available security tools."""
-    oc = get_openclaw_client()
-    return await oc.list_tools()
-
-@app.post("/api/openclaw/execute", tags=["OpenClaw"])
-async def execute_openclaw_tool(
-    request: CommandRequest,
-    user: Optional[Dict] = Depends(get_api_key_user),
-):
-    """Execute a security tool via OpenClaw."""
-    oc = get_openclaw_client()
-    try:
-        result = await oc.execute_tool(request.command, request.target, request.params)
-        return result
-    except Exception as e:
-        raise HTTPException(500, f"OpenClaw error: {str(e)}")
-
-# ============ WEBSOCKET ============
-
-@app.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    await manager.connect(session_id, websocket)
-    try:
-        while True:
-            data = await websocket.receive_json()
-            
-            # Process voice input
-            if data.get("type") == "voice_input":
-                text = data.get("text", "")
-                response = await process_voice_input(text, session_id)
-                await manager.send_json(session_id, response)
-            
-            # Execute action
-            elif data.get("type") == "execute":
-                action_type = data.get("action")
-                params = data.get("params", {})
-                result = await execute_action(action_type, params)
-                await manager.send_json(session_id, {
-                    "type": "action_result",
-                    "action": action_type,
-                    "result": result,
-                })
-    
-    except WebSocketDisconnect:
-        manager.disconnect(session_id)
-
-async def process_voice_input(text: str, session_id: str) -> dict:
-    """Process voice input via WebSocket."""
-    # Use the main process_voice logic
-    request = VoiceRequest(text=text, session_id=session_id)
-    response = await process_voice(request)
-    return {
-        "type": "voice_response",
-        "text": response.text,
-        "intent": response.intent,
-        "confidence": response.confidence,
-        "action": response.action,
-        "requires_confirmation": response.requires_confirmation,
-    }
-
-async def execute_action(action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute an action."""
-    if action_type == "telegram_send":
-        tg = get_telegram_client()
-        return await tg.send_message(
-            params.get("chat_id"),
-            params.get("text"),
-        )
-    
-    elif action_type == "agent_execute":
-        az = get_agent_zero_client()
-        return await az.execute_task(params.get("prompt"))
-    
-    elif action_type == "openclaw_scan":
-        oc = get_openclaw_client()
-        return await oc.execute_tool(
-            params.get("tool", "nmap"),
-            params.get("target"),
-        )
-    
-    return {"error": f"Unknown action: {action_type}"}
-
-def generate_response(text: str, intent: str, entities: Dict) -> str:
-    """Generate a conversational response."""
-    if intent == "COMMAND":
-        action = entities.get("action", "")
-        if "telegram" in action:
-            return "I'll send that message via Telegram. Please confirm."
-        elif "agent" in action:
-            return "I'll execute that task via Agent Zero. Please confirm."
-        elif "scan" in action:
-            return "I'll run that security scan. Please confirm."
-        return "Ready to execute command. Please confirm."
-    
-    # Chat responses
-    if "hello" in text or "hi" in text:
-        return "Hello! How can I assist you today?"
-    elif "help" in text:
-        return "I can help you send Telegram messages, execute tasks via Agent Zero, or run security scans. What would you like to do?"
-    
-    return "I understand. How can I help you with that?"
-
-# Health check
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+    adapter = AgentZeroAdapter()
+    agent_ok = await adapter.health_check()
+    return {
+        "status": "healthy",
+        "agent_zero": "connected" if agent_ok else "unreachable",
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
 
 @app.get("/")
 async def root():
-    return {"message": "Voice Interface API v2.0", "docs": "/docs"}
+    return {"message": "Voice Relay v3.0", "ws": "/ws", "docs": "/docs"}
+
+
+# ── WebSocket ─────────────────────────────────────────────────────────
+
+class RelaySession:
+    """State for one connected mobile client."""
+
+    def __init__(self, ws: WebSocket):
+        self.ws = ws
+        self.authenticated = False
+        self.active_chat_id: Optional[str] = None
+        self._audio_buffer: list[bytes] = []
+
+    async def send(self, data: dict):
+        try:
+            await self.ws.send_json(data)
+        except Exception as exc:
+            log.warning("Failed to send to client: %s", exc)
+
+    # ── audio buffer ──────────────────────────────────────────────────
+
+    def buffer_audio(self, chunk_b64: str):
+        self._audio_buffer.append(base64.b64decode(chunk_b64))
+
+    def pop_audio(self) -> bytes:
+        data = b"".join(self._audio_buffer)
+        self._audio_buffer.clear()
+        return data
+
+    def clear_audio(self):
+        self._audio_buffer.clear()
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    session = RelaySession(ws)
+    log.info("Client connected")
+
+    try:
+        while True:
+            msg = await ws.receive_json()
+            await _handle_message(session, msg)
+
+    except WebSocketDisconnect:
+        log.info("Client disconnected")
+    except Exception as exc:
+        log.error("WebSocket error: %s", exc, exc_info=True)
+
+
+# ── Message router ────────────────────────────────────────────────────
+
+async def _handle_message(s: RelaySession, msg: dict):
+    t = msg.get("type")
+
+    # Auth must come first
+    if t == "auth":
+        await _handle_auth(s, msg)
+        return
+
+    if not s.authenticated:
+        await s.send({"type": "auth_error", "message": "Not authenticated"})
+        return
+
+    match t:
+        case "audio_chunk":
+            s.buffer_audio(msg.get("data", ""))
+
+        case "audio_end":
+            await _handle_audio_end(s)
+
+        case "text_message":
+            text = (msg.get("text") or "").strip()
+            if text:
+                await _relay_to_agent(s, text)
+
+        case "select_chat":
+            await _handle_select_chat(s, msg)
+
+        case "new_chat":
+            await _handle_new_chat(s, msg)
+
+        case "list_chats":
+            await _handle_list_chats(s)
+
+        case _:
+            log.warning("Unknown message type: %s", t)
+
+
+# ── Handlers ──────────────────────────────────────────────────────────
+
+async def _handle_auth(s: RelaySession, msg: dict):
+    token = msg.get("token", "")
+    if token == settings.app_secret:
+        s.authenticated = True
+        await s.send({"type": "auth_ok"})
+        log.info("Client authenticated")
+    else:
+        await s.send({"type": "auth_error", "message": "Invalid token"})
+        log.warning("Auth failed — wrong token")
+
+
+async def _handle_audio_end(s: RelaySession):
+    audio = s.pop_audio()
+    if not audio:
+        return
+
+    # 1. Transcribe
+    await s.send({"type": "transcript", "text": "…"})   # show spinner
+    text = await transcribe_audio(audio, filename="audio.m4a")
+    if not text:
+        await s.send({"type": "error", "message": "Could not understand audio"})
+        return
+
+    await s.send({"type": "transcript", "text": text})
+    await _relay_to_agent(s, text)
+
+
+async def _relay_to_agent(s: RelaySession, text: str):
+    """
+    Core relay loop:
+      1. save user message
+      2. start streaming Agent Zero updates to the client
+      3. send message to Agent Zero (blocks until done)
+      4. save assistant response
+      5. stream TTS audio back
+      6. kick off background memory compression
+    """
+    # Ensure we have a chat
+    if not s.active_chat_id:
+        chat = await session_store.create_chat("New Chat")
+        s.active_chat_id = chat.id
+        await s.send({"type": "chat_created", "chat": _chat_to_dict(chat)})
+
+    chat_id = s.active_chat_id
+
+    # Persist user message
+    await session_store.add_message(chat_id, "user", text)
+
+    # Get existing Agent Zero context for this chat
+    chat = await session_store.get_chat(chat_id)
+    az_context_id = chat.agent_context_id if chat else None
+
+    # Build context preamble for first message or resumed chat
+    preamble = await build_context_for_agent(chat_id)
+    full_text = f"{preamble}\n\nUser: {text}" if preamble and not az_context_id else text
+
+    adapter = AgentZeroAdapter()
+
+    # Run send_message and stream_updates concurrently
+    # stream_updates subscribes to Socket.IO before send_message posts
+    response_holder: list[str] = []
+    ctx_holder: list[str] = []
+
+    async def _send():
+        response, ctx = await adapter.send_message(full_text, az_context_id)
+        response_holder.append(response)
+        ctx_holder.append(ctx)
+
+    async def _stream():
+        # We start streaming before send so we don't miss early events.
+        # If az_context_id is None, stream_updates won't have a context yet —
+        # that's OK, Agent Zero will create one and we catch updates via
+        # the global Socket.IO broadcast.
+        target_ctx = az_context_id or ""
+        async for update in adapter.stream_updates(target_ctx):
+            await s.send({"type": "agent_update", "text": update, "partial": True})
+
+    # Fire both; streaming exits naturally when agent goes idle
+    await asyncio.gather(_send(), _stream())
+
+    response_text = response_holder[0] if response_holder else ""
+    returned_ctx = ctx_holder[0] if ctx_holder else az_context_id
+
+    # Save the context_id if it's new
+    if returned_ctx and returned_ctx != az_context_id:
+        await session_store.set_agent_context(chat_id, returned_ctx)
+
+    if not response_text:
+        await s.send({"type": "error", "message": "No response from agent"})
+        return
+
+    # Persist assistant response
+    await session_store.add_message(chat_id, "assistant", response_text)
+
+    # Send final text to UI
+    await s.send({"type": "agent_done", "text": response_text})
+
+    # Stream TTS audio
+    async for chunk in stream_tts(response_text):
+        chunk_b64 = base64.b64encode(chunk).decode()
+        await s.send({"type": "audio_chunk", "data": chunk_b64})
+    await s.send({"type": "audio_end"})
+
+    # Kick off background memory compression (fire and forget)
+    asyncio.create_task(maybe_compress(chat_id))
+
+
+async def _handle_select_chat(s: RelaySession, msg: dict):
+    chat_id = msg.get("chat_id")
+    if not chat_id:
+        return
+    chat = await session_store.get_chat(chat_id)
+    if not chat:
+        await s.send({"type": "error", "message": f"Chat {chat_id} not found"})
+        return
+    s.active_chat_id = chat_id
+    # Send back the chat's messages so the UI can restore history
+    messages = await session_store.get_messages(chat_id)
+    await s.send({
+        "type": "chat_selected",
+        "chat": _chat_to_dict(chat),
+        "messages": [_message_to_dict(m) for m in messages],
+    })
+
+
+async def _handle_new_chat(s: RelaySession, msg: dict):
+    name = (msg.get("name") or "New Chat").strip()
+    chat = await session_store.create_chat(name)
+    s.active_chat_id = chat.id
+    await s.send({"type": "chat_created", "chat": _chat_to_dict(chat)})
+
+
+async def _handle_list_chats(s: RelaySession):
+    chats = await session_store.list_chats()
+    await s.send({"type": "chat_list", "chats": [_chat_to_dict(c) for c in chats]})
+
+
+# ── Serialisers ───────────────────────────────────────────────────────
+
+def _chat_to_dict(chat) -> dict:
+    return {
+        "id": chat.id,
+        "name": chat.name,
+        "agent_context_id": chat.agent_context_id,
+        "has_summary": bool(chat.summary),
+        "created_at": chat.created_at.isoformat(),
+        "updated_at": chat.updated_at.isoformat(),
+    }
+
+
+def _message_to_dict(msg) -> dict:
+    return {
+        "id": msg.id,
+        "role": msg.role,
+        "text": msg.text,
+        "created_at": msg.created_at.isoformat(),
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
