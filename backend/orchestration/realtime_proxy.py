@@ -1,4 +1,4 @@
-"""Realtime API proxy that equips GPT-4o with Agent Zero task orchestration tools."""
+"""Realtime API proxy that equips a realtime model with Agent Zero task orchestration tools."""
 from __future__ import annotations
 
 import asyncio
@@ -25,24 +25,58 @@ DEFAULT_ASSISTANT_INSTRUCTIONS = (
 )
 
 
-def _build_realtime_ws_url() -> str:
-    base = os.environ.get("OPENAI_REALTIME_URL", "wss://api.openai.com/v1/realtime")
-    model = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview")
+def _resolve_provider_and_key() -> Tuple[str, str]:
+    provider = os.environ.get("REALTIME_PROVIDER", "").strip().lower()
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    zai_key = os.environ.get("ZAI_API_KEY", "").strip()
+
+    if provider in {"zai", "z.ai", "glm", "bigmodel"}:
+        return "zai", zai_key
+    if provider == "openai":
+        return "openai", openai_key
+
+    if openai_key:
+        return "openai", openai_key
+    if zai_key:
+        return "zai", zai_key
+
+    return "", ""
+
+
+def _build_realtime_ws_url(provider: str) -> str:
+    if provider == "zai":
+        base = os.environ.get("ZAI_REALTIME_URL", "wss://open.bigmodel.cn/api/paas/v4/realtime")
+        model = os.environ.get("ZAI_REALTIME_MODEL", "glm-realtime")
+    else:
+        base = os.environ.get("OPENAI_REALTIME_URL", "wss://api.openai.com/v1/realtime")
+        model = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime")
+
     query = urlencode({"model": model})
     return f"{base}?{query}"
 
 
-def _build_session_update(conversation_id: str) -> Dict[str, Any]:
+def _build_session_update(conversation_id: str, provider: str) -> Dict[str, Any]:
     instructions = os.environ.get("REALTIME_ASSISTANT_INSTRUCTIONS", DEFAULT_ASSISTANT_INSTRUCTIONS)
     instructions = f"Conversation ID: {conversation_id}\n{instructions}"
 
+    model = (
+        os.environ.get("ZAI_REALTIME_MODEL", "glm-realtime")
+        if provider == "zai"
+        else os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime")
+    )
+
     session: Dict[str, Any] = {
+        "model": model,
         "instructions": instructions,
         "tools": build_realtime_tool_specs(),
         "tool_choice": "auto",
     }
 
-    voice = os.environ.get("OPENAI_REALTIME_VOICE")
+    voice = (
+        os.environ.get("ZAI_REALTIME_VOICE")
+        if provider == "zai"
+        else os.environ.get("OPENAI_REALTIME_VOICE")
+    )
     if voice:
         session["voice"] = voice
 
@@ -84,13 +118,18 @@ def _extract_function_call(event: Dict[str, Any]) -> Optional[Tuple[str, str, An
 
 
 async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> None:
-    """Bridge client WebSocket <-> OpenAI Realtime and execute tool calls."""
+    """Bridge client WebSocket <-> upstream realtime provider and execute tool calls."""
 
     await websocket.accept()
 
-    api_key = os.environ.get("OPENAI_API_KEY")
+    provider, api_key = _resolve_provider_and_key()
     if not api_key:
-        await websocket.send_json({"type": "proxy.error", "error": "OPENAI_API_KEY is not configured"})
+        await websocket.send_json(
+            {
+                "type": "proxy.error",
+                "error": "No realtime API key configured. Set ZAI_API_KEY or OPENAI_API_KEY.",
+            }
+        )
         await websocket.close(code=1011)
         return
 
@@ -98,11 +137,8 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
     tool_router = get_tool_router()
     await task_manager.initialize()
 
-    upstream_url = _build_realtime_ws_url()
-    upstream_headers = {
-        "Authorization": f"Bearer {api_key}",
-        "OpenAI-Beta": "realtime=v1",
-    }
+    upstream_url = _build_realtime_ws_url(provider)
+    upstream_headers = {"Authorization": f"Bearer {api_key}"}
 
     task_event_queue = await task_manager.subscribe(conversation_id)
 
@@ -120,7 +156,7 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
             connect_kwargs["extra_headers"] = upstream_headers
 
         async with websockets.connect(upstream_url, **connect_kwargs) as upstream:
-            await upstream.send(json.dumps(_build_session_update(conversation_id)))
+            await upstream.send(json.dumps(_build_session_update(conversation_id, provider)))
 
             completed_tool_calls: Set[str] = set()
 

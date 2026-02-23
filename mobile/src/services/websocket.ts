@@ -1,5 +1,8 @@
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000';
 const RAW_WS_BASE_URL = process.env.EXPO_PUBLIC_WS_URL || API_URL;
+const REALTIME_ENABLED = ['1', 'true', 'yes'].includes(
+  (process.env.EXPO_PUBLIC_REALTIME_ENABLED || '').toLowerCase(),
+);
 
 const normalizeBaseUrl = (value: string): string => value.replace(/\/$/, '');
 
@@ -21,13 +24,28 @@ const WS_BASE_URL = buildWebSocketBaseUrl();
 
 type Listener = (data: any) => void;
 
+type LocalChat = {
+  id: string;
+  name: string;
+  agent_context_id: string | null;
+  has_summary: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 class WebSocketService {
   private socket: WebSocket | null = null;
   private listeners: Map<string, Set<Listener>> = new Map();
   private assistantMessageIds: Set<string> = new Set();
   private currentConversationId: string | null = null;
+  private localChats: LocalChat[] = [];
 
   connect(conversationId: string): Promise<void> {
+    if (!REALTIME_ENABLED) {
+      this.disconnect();
+      return Promise.reject(new Error('Realtime disabled'));
+    }
+
     return new Promise((resolve, reject) => {
       this.disconnect();
 
@@ -122,6 +140,39 @@ class WebSocketService {
     return this.socket?.readyState === WebSocket.OPEN;
   }
 
+  isRealtimeEnabled(): boolean {
+    return REALTIME_ENABLED;
+  }
+
+  listChats() {
+    this.ensureLocalChatExists();
+    this.emit('chat_list', { chats: this.localChats });
+  }
+
+  newChat(name: string) {
+    const now = new Date().toISOString();
+    const chat: LocalChat = {
+      id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+      name: (name || 'New Chat').trim() || 'New Chat',
+      agent_context_id: null,
+      has_summary: false,
+      created_at: now,
+      updated_at: now,
+    };
+    this.localChats = [chat, ...this.localChats];
+    this.emit('chat_created', { chat });
+    this.emit('chat_list', { chats: this.localChats });
+  }
+
+  selectChat(chatId: string) {
+    this.ensureLocalChatExists();
+    const chat = this.localChats.find((entry) => entry.id === chatId);
+    if (!chat) {
+      return;
+    }
+    this.emit('chat_selected', { chat, messages: [] });
+  }
+
   private emit(event: string, data: any) {
     this.listeners.get(event)?.forEach((callback) => callback(data));
   }
@@ -141,6 +192,7 @@ class WebSocketService {
   private handleRealtimeEvent(payload: any) {
     if (payload.type === 'proxy.error') {
       this.emit('error', payload);
+      this.disconnect();
       return;
     }
 
@@ -163,6 +215,23 @@ class WebSocketService {
       text: assistantText,
       raw: payload,
     });
+  }
+
+  private ensureLocalChatExists() {
+    if (this.localChats.length > 0) {
+      return;
+    }
+    const now = new Date().toISOString();
+    this.localChats = [
+      {
+        id: 'chat_default',
+        name: 'Current Session',
+        agent_context_id: null,
+        has_summary: false,
+        created_at: now,
+        updated_at: now,
+      },
+    ];
   }
 
   private extractAssistantMessageText(payload: any): string | null {

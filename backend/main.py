@@ -1,11 +1,15 @@
 """Voice Interface Backend - FastAPI Server (Agent Zero only)."""
 from __future__ import annotations
 
+import os
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict, Optional
+from mimetypes import guess_type
+from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+import httpx
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
@@ -26,6 +30,23 @@ from integrations.agent_zero import get_agent_zero_client
 from orchestration import handle_realtime_proxy, shutdown_orchestration
 from orchestration.routes import router as orchestration_router
 
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "z-ai/glm-5")
+OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+ZAI_API_KEY = os.environ.get("ZAI_API_KEY", "")
+ZAI_MODEL = os.environ.get("ZAI_MODEL", "glm-5")
+ZAI_ASR_MODEL = os.environ.get("ZAI_ASR_MODEL", "glm-asr-2512")
+ZAI_BASE_URL = os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4")
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "45"))
+SYSTEM_PROMPT = (
+    "You are a concise voice assistant. Be practical and direct. "
+    "If the user asks to run tasks, acknowledge and keep context crisp."
+)
+
+llm_client = httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS)
+conversation_history: Dict[str, List[Dict[str, str]]] = {}
+log = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,6 +55,7 @@ async def lifespan(app: FastAPI):
     print("Shutting down...")
     az = get_agent_zero_client()
     await az.close()
+    await llm_client.aclose()
     await shutdown_orchestration()
 
 
@@ -184,7 +206,10 @@ async def process_voice(
         requires_confirmation = True
         action = {"type": "agent_execute", "status": "pending"}
 
-    response_text = generate_response(text, intent, entities)
+    if intent == "CHAT":
+        response_text = await generate_llm_response(request.session_id, request.text)
+    else:
+        response_text = generate_response(text, intent, entities)
 
     return VoiceResponse(
         text=response_text,
@@ -194,6 +219,26 @@ async def process_voice(
         requires_confirmation=requires_confirmation,
         entities=entities,
     )
+
+
+@app.post("/api/voice/transcribe", tags=["Voice"])
+async def transcribe_voice(
+    file: UploadFile = File(...),
+    user: Optional[Dict[str, Any]] = Depends(get_api_key_user),
+):
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(400, "Uploaded audio file is empty")
+
+    filename = file.filename or "audio.m4a"
+    try:
+        transcript = await transcribe_audio_bytes(audio_bytes, filename)
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    if not transcript:
+        raise HTTPException(502, "Transcription failed: empty transcript")
+
+    return {"text": transcript}
 
 
 @app.post("/api/voice/confirm", tags=["Voice"])
@@ -289,6 +334,149 @@ async def execute_action(action_type: str, params: Dict[str, Any]) -> Dict[str, 
         return await az.execute_task(params.get("prompt", ""), params.get("context"))
 
     return {"error": f"Unknown action: {action_type}"}
+
+
+async def generate_llm_response(session_id: str, user_text: str) -> str:
+    history = conversation_history.setdefault(session_id, [])
+    history.append({"role": "user", "content": user_text})
+    history[:] = history[-12:]
+
+    if OPENROUTER_API_KEY:
+        reply = await _call_openrouter(history)
+    elif ZAI_API_KEY:
+        reply = await _call_zai(history)
+    else:
+        reply = _fallback_chat(user_text)
+
+    history.append({"role": "assistant", "content": reply})
+    history[:] = history[-12:]
+    return reply
+
+
+async def _call_openrouter(history: List[Dict[str, str]]) -> str:
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + history,
+    }
+    try:
+        response = await llm_client.post(
+            f"{OPENROUTER_BASE_URL}/chat/completions",
+            headers=headers,
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return _extract_chat_content(data) or "I received that. What should I do next?"
+    except httpx.HTTPStatusError as exc:
+        detail = _safe_error_detail(exc.response)
+        return f"OpenRouter request failed ({exc.response.status_code}). {detail}".strip()
+    except Exception as exc:
+        return f"OpenRouter request failed: {exc}"
+
+
+async def _call_zai(history: List[Dict[str, str]]) -> str:
+    headers = {
+        "Authorization": f"Bearer {ZAI_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept-Language": "en-US,en",
+    }
+    payload = {
+        "model": ZAI_MODEL,
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + history,
+    }
+    try:
+        response = await llm_client.post(
+            f"{ZAI_BASE_URL}/chat/completions",
+            headers=headers,
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return _extract_chat_content(data) or "I received that. What should I do next?"
+    except httpx.HTTPStatusError as exc:
+        detail = _safe_error_detail(exc.response)
+        return f"Z.AI request failed ({exc.response.status_code}). {detail}".strip()
+    except Exception as exc:
+        return f"Z.AI request failed: {exc}"
+
+
+def _extract_chat_content(data: Dict[str, Any]) -> str:
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    message = choices[0].get("message", {})
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        texts = [part.get("text", "") for part in content if isinstance(part, dict)]
+        return "\n".join(t for t in texts if t).strip()
+    return ""
+
+
+def _safe_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            for key in ("error", "message", "detail"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+                if isinstance(value, dict):
+                    nested = value.get("message")
+                    if isinstance(nested, str) and nested.strip():
+                        return nested.strip()
+        text = response.text.strip()
+        return text[:200] if text else ""
+    except Exception:
+        return ""
+
+
+def _fallback_chat(user_text: str) -> str:
+    if "hello" in user_text.lower() or "hi" in user_text.lower():
+        return "Hello. What do you want to work on?"
+    return "I got it. Set OPENROUTER_API_KEY or ZAI_API_KEY for full model responses."
+
+
+async def transcribe_audio_bytes(audio_bytes: bytes, filename: str) -> str:
+    if not ZAI_API_KEY:
+        raise RuntimeError("Transcription unavailable: ZAI_API_KEY is not configured")
+
+    content_type = guess_type(filename)[0] or "application/octet-stream"
+    headers = {
+        "Authorization": f"Bearer {ZAI_API_KEY}",
+    }
+    data = {"model": ZAI_ASR_MODEL, "stream": "false"}
+    files = {"file": (filename, audio_bytes, content_type)}
+
+    try:
+        response = await llm_client.post(
+            f"{ZAI_BASE_URL}/audio/transcriptions",
+            headers=headers,
+            data=data,
+            files=files,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        text = payload.get("text", "")
+        return text.strip() if isinstance(text, str) else ""
+    except httpx.HTTPStatusError as exc:
+        detail = _safe_error_detail(exc.response)
+        log.warning(
+            "Z.AI transcription failed status=%s detail=%s content_type=%s filename=%s bytes=%s",
+            exc.response.status_code,
+            detail,
+            content_type,
+            filename,
+            len(audio_bytes),
+        )
+        raise RuntimeError(f"Z.AI transcription failed ({exc.response.status_code}). {detail}".strip())
+    except Exception as exc:
+        raise RuntimeError(f"Z.AI transcription failed: {exc}")
 
 
 def generate_response(text: str, intent: str, entities: Dict[str, Any]) -> str:
