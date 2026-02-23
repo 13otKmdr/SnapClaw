@@ -18,6 +18,8 @@ import json
 from integrations.telegram import TelegramIntegration, get_telegram_client
 from integrations.agent_zero import AgentZeroIntegration, get_agent_zero_client
 from integrations.openclaw import OpenClawIntegration, get_openclaw_client
+from orchestration import handle_realtime_proxy, shutdown_orchestration
+from orchestration.routes import router as orchestration_router
 
 # Import auth
 from auth import (
@@ -46,6 +48,7 @@ async def lifespan(app: FastAPI):
     await tg.close()
     await az.close()
     await oc.close()
+    await shutdown_orchestration()
 
 # Create app
 app = FastAPI(
@@ -54,6 +57,8 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+app.include_router(orchestration_router)
 
 # CORS
 app.add_middleware(
@@ -357,6 +362,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     
     except WebSocketDisconnect:
         manager.disconnect(session_id)
+
+
+@app.websocket("/ws/realtime/{conversation_id}")
+async def realtime_proxy_endpoint(websocket: WebSocket, conversation_id: str):
+    """Realtime API proxy endpoint with Agent Zero task orchestration tools."""
+    await handle_realtime_proxy(websocket, conversation_id)
 
 async def process_voice_input(text: str, session_id: str) -> dict:
     """Process voice input via WebSocket."""

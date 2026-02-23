@@ -210,7 +210,28 @@ export AGENT_ZERO_API_KEY="your-key"
 export OPENCLAW_WS_URL="ws://localhost:9000/ws"
 export OPENCLAW_HTTP_URL="http://localhost:9000"
 export OPENCLAW_AUTH_TOKEN="your-token"
+export OPENAI_API_KEY="sk-..."
+export OPENAI_REALTIME_MODEL="gpt-4o-realtime-preview"
+export OPENAI_REALTIME_URL="wss://api.openai.com/v1/realtime"
+export AGENT_ZERO_EXECUTOR="http"  # use "mock" for local simulation
+export TASK_STORE="redis"  # use "memory" for non-persistent local mode
+export REDIS_URL="redis://localhost:6379/0"
 ```
+
+## 🎙️ Realtime Orchestrator Proxy
+
+The backend now supports a Realtime API proxy where GPT-4o is the conversational brain and Agent Zero is an async execution tool:
+
+- WebSocket proxy: `ws://<host>:8000/ws/realtime/{conversation_id}`
+- Task API: `POST /api/tasks`, `GET /api/tasks`, `GET /api/tasks/{task_id}`, `POST /api/tasks/{task_id}/update`, `POST /api/tasks/{task_id}/cancel`
+- Built-in tool schema for GPT-4o: `create_task`, `list_tasks`, `check_task_status`, `update_task`, `cancel_task`
+- Persistent task storage: set `TASK_STORE=redis` (with `REDIS_URL`) to recover in-flight tasks after backend restarts
+
+At session start, the proxy sends `session.update` with those tools enabled and `server_vad` turn detection by default.
+
+For mobile clients, point transport to your backend:
+- `EXPO_PUBLIC_API_URL=http://<host>:8000`
+- `EXPO_PUBLIC_WS_URL=ws://<host>:8000`
 
 ### Permission Config (permissions.yaml)
 
