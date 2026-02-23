@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 from typing import Any, Dict, Optional, Set, Tuple
@@ -106,13 +107,19 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
     task_event_queue = await task_manager.subscribe(conversation_id)
 
     try:
-        async with websockets.connect(
-            upstream_url,
-            extra_headers=upstream_headers,
-            ping_interval=20,
-            ping_timeout=20,
-            max_size=8 * 1024 * 1024,
-        ) as upstream:
+        connect_kwargs: Dict[str, Any] = {
+            "ping_interval": 20,
+            "ping_timeout": 20,
+            "max_size": 8 * 1024 * 1024,
+        }
+        # websockets<=15 uses extra_headers; websockets>=16 uses additional_headers.
+        param_names = set(inspect.signature(websockets.connect).parameters.keys())
+        if "additional_headers" in param_names:
+            connect_kwargs["additional_headers"] = upstream_headers
+        else:
+            connect_kwargs["extra_headers"] = upstream_headers
+
+        async with websockets.connect(upstream_url, **connect_kwargs) as upstream:
             await upstream.send(json.dumps(_build_session_update(conversation_id)))
 
             completed_tool_calls: Set[str] = set()
