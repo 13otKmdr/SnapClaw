@@ -1,276 +1,211 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  SafeAreaView,
-  TouchableOpacity,
-  TextInput,
   KeyboardAvoidingView,
   Platform,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { useVoice } from '../hooks/useVoice';
-import { VoiceButton, MessageBubble, ConfirmationModal } from '../components';
+import { useChats } from '../hooks/useChats';
+import { VoiceButton, MessageBubble, StreamingMessage, ChatListModal } from '../components';
 
-type RootStackParamList = {
-  Home: undefined;
-  Settings: undefined;
-};
+type RootStackParamList = { Home: undefined; Settings: undefined };
+type Nav = NativeStackNavigationProp<RootStackParamList, 'Home'>;
 
-type HomeScreenNavigationProp = NativeStackNavigationProp<RootStackParamList, 'Home'>;
-
-interface Props {
-  navigation: HomeScreenNavigationProp;
-}
-
-export const HomeScreen: React.FC<Props> = ({ navigation }) => {
+export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
   const {
-    isListening,
-    isProcessing,
-    isSpeaking,
-    isConnected,
-    transcript,
-    messages,
-    requiresConfirmation,
-    confirmationPrompt,
-    startListening,
-    stopListening,
-    sendMessage,
-    confirmAction,
-    clearHistory,
+    isListening, isProcessing, isSpeaking, isConnected,
+    transcript, messages, streamingText,
+    startListening, stopListening, sendMessage,
+    restoreMessages, clearMessages,
   } = useVoice();
 
-  const scrollViewRef = useRef<ScrollView>(null);
-  const [textInput, setTextInput] = React.useState('');
+  const { chats, activeChat, selectChat, createChat, refreshChats, setChatSelectedCallback } = useChats();
+
+  const [textInput, setTextInput] = useState('');
+  const [chatModalVisible, setChatModalVisible] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+
+  // When the user picks a chat, restore its messages
+  useEffect(() => {
+    setChatSelectedCallback((chat, stored) => {
+      restoreMessages(chat, stored);
+    });
+  }, [setChatSelectedCallback, restoreMessages]);
 
   useEffect(() => {
-    scrollViewRef.current?.scrollToEnd({ animated: true });
-  }, [messages]);
+    scrollRef.current?.scrollToEnd({ animated: true });
+  }, [messages, streamingText]);
 
-  const handleSendText = () => {
-    if (textInput.trim()) {
-      sendMessage(textInput.trim());
-      setTextInput('');
-    }
-  };
+  const handleSend = useCallback(() => {
+    const t = textInput.trim();
+    if (t) { sendMessage(t); setTextInput(''); }
+  }, [textInput, sendMessage]);
 
-  const statusText = () => {
-    if (isProcessing) return 'Processing...';
-    if (isSpeaking) return 'Speaking...';
-    if (isListening) return 'Listening...';
-    if (isConnected) return 'Connected';
-    return 'Ready (Offline Mode)';
-  };
+  // ── Status ──────────────────────────────────────────────────────────
 
-  const statusColor = () => {
-    if (isProcessing) return '#FFA500';
-    if (isSpeaking) return '#FF4444';
-    if (isListening) return '#00FF00';
-    if (isConnected) return '#007AFF';
-    return '#666';
-  };
+  const statusLabel = isProcessing ? 'Thinking…'
+    : isSpeaking   ? 'Speaking…'
+    : isListening  ? 'Listening…'
+    : isConnected  ? 'Connected'
+    : 'Offline';
+
+  const statusColor = isProcessing ? '#FFA500'
+    : isSpeaking   ? '#ff6b6b'
+    : isListening  ? '#00e676'
+    : isConnected  ? '#7c7cff'
+    : '#555';
+
+  // ── Render ──────────────────────────────────────────────────────────
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
+
+      {/* ── Header ── */}
       <View style={styles.header}>
-        <Text style={styles.title}>Voice AI</Text>
-        <View style={styles.headerButtons}>
-          <TouchableOpacity onPress={clearHistory} style={styles.headerButton}>
-            <Ionicons name="trash-outline" size={24} color="#666" />
+        <TouchableOpacity onPress={() => { refreshChats(); setChatModalVisible(true); }} style={styles.chatBtn}>
+          <Ionicons name="chatbubbles-outline" size={22} color="#7c7cff" />
+          <Text style={styles.chatBtnLabel} numberOfLines={1}>
+            {activeChat?.name ?? 'Chats'}
+          </Text>
+          <Ionicons name="chevron-down" size={14} color="#555" />
+        </TouchableOpacity>
+
+        <View style={styles.headerRight}>
+          <TouchableOpacity onPress={clearMessages} style={styles.iconBtn}>
+            <Ionicons name="trash-outline" size={20} color="#555" />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.headerButton}>
-            <Ionicons name="settings-outline" size={24} color="#666" />
+          <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.iconBtn}>
+            <Ionicons name="settings-outline" size={20} color="#555" />
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Status Bar */}
-      <View style={styles.statusBar}>
-        <View style={[styles.statusDot, { backgroundColor: statusColor() }]} />
-        <Text style={[styles.statusText, { color: statusColor() }]}>{statusText()}</Text>
+      {/* ── Status strip ── */}
+      <View style={styles.statusStrip}>
+        <View style={[styles.dot, { backgroundColor: statusColor }]} />
+        <Text style={[styles.statusLabel, { color: statusColor }]}>{statusLabel}</Text>
       </View>
 
-      {/* Transcript Preview */}
-      {(isListening || transcript) && (
+      {/* ── Transcript bar ── */}
+      {(isListening || (transcript && transcript !== '…')) && (
         <View style={styles.transcriptBar}>
+          <Ionicons name="mic" size={12} color="#00e676" style={{ marginRight: 6 }} />
           <Text style={styles.transcriptText} numberOfLines={1}>
-            {transcript || 'Listening...'}
+            {transcript || 'Listening…'}
           </Text>
         </View>
       )}
 
-      {/* Messages */}
+      {/* ── Messages ── */}
       <ScrollView
-        ref={scrollViewRef}
-        style={styles.messagesContainer}
+        ref={scrollRef}
+        style={styles.messages}
         contentContainerStyle={styles.messagesContent}
       >
-        {messages.length === 0 && (
-          <View style={styles.emptyState}>
-            <Ionicons name="mic-outline" size={64} color="#333" />
-            <Text style={styles.emptyText}>
-              Tap the microphone button below to start talking
-            </Text>
-            <Text style={styles.emptySubtext}>
-              Or type a message in the text field
-            </Text>
+        {messages.length === 0 && !streamingText && (
+          <View style={styles.empty}>
+            <Ionicons name="mic-outline" size={56} color="#222" />
+            <Text style={styles.emptyTitle}>Hold to speak or type below</Text>
+            <Text style={styles.emptySub}>Agent Zero will respond in real-time</Text>
           </View>
         )}
+
         {messages.map((msg) => (
           <MessageBubble key={msg.id} message={msg} />
         ))}
+
+        {/* Live streaming text from Agent Zero */}
+        {streamingText ? (
+          <StreamingMessage text={streamingText} isStreaming={true} />
+        ) : null}
       </ScrollView>
 
-      {/* Input Area */}
+      {/* ── Input row ── */}
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={90}
       >
-        <View style={styles.inputArea}>
+        <View style={styles.inputRow}>
           <TextInput
-            style={styles.textInput}
-            placeholder="Type a message..."
-            placeholderTextColor="#666"
+            style={styles.input}
+            placeholder="Type a message…"
+            placeholderTextColor="#444"
             value={textInput}
             onChangeText={setTextInput}
-            onSubmitEditing={handleSendText}
+            onSubmitEditing={handleSend}
             returnKeyType="send"
             editable={!isProcessing}
+            multiline
           />
           <TouchableOpacity
-            style={[styles.sendButton, !textInput.trim() && styles.sendButtonDisabled]}
-            onPress={handleSendText}
+            style={[styles.sendBtn, !textInput.trim() && styles.sendBtnOff]}
+            onPress={handleSend}
             disabled={!textInput.trim() || isProcessing}
           >
-            <Ionicons name="send" size={20} color={textInput.trim() ? '#fff' : '#333'} />
+            <Ionicons name="send" size={18} color={textInput.trim() ? '#fff' : '#333'} />
           </TouchableOpacity>
           <VoiceButton />
         </View>
       </KeyboardAvoidingView>
 
-      {/* Confirmation Modal */}
-      <ConfirmationModal
-        visible={requiresConfirmation}
-        prompt={confirmationPrompt || 'Do you want to proceed?'}
-        onConfirm={() => confirmAction(true)}
-        onCancel={() => confirmAction(false)}
+      {/* ── Chat list modal ── */}
+      <ChatListModal
+        visible={chatModalVisible}
+        chats={chats}
+        activeChat={activeChat}
+        onSelect={selectChat}
+        onCreate={createChat}
+        onClose={() => setChatModalVisible(false)}
       />
+
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0a0a0a',
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1a1a1a',
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-  headerButtons: {
-    flexDirection: 'row',
-    gap: 16,
-  },
-  headerButton: {
-    padding: 4,
-  },
-  statusBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#111',
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 8,
-  },
-  statusText: {
-    fontSize: 12,
-  },
-  transcriptBar: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#1a1a1a',
-  },
-  transcriptText: {
-    color: '#00FF00',
-    fontSize: 14,
-    fontStyle: 'italic',
-  },
-  messagesContainer: {
-    flex: 1,
-  },
-  messagesContent: {
-    padding: 16,
-    paddingBottom: 24,
-  },
-  emptyState: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 100,
-  },
-  emptyText: {
-    color: '#666',
-    fontSize: 16,
-    textAlign: 'center',
-    marginTop: 16,
-    maxWidth: 250,
-  },
-  emptySubtext: {
-    color: '#444',
-    fontSize: 14,
-    textAlign: 'center',
-    marginTop: 8,
-  },
-  inputArea: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#111',
-    borderTopWidth: 1,
-    borderTopColor: '#222',
-    gap: 8,
-  },
-  textInput: {
-    flex: 1,
-    backgroundColor: '#1a1a1a',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    color: '#fff',
-    fontSize: 16,
-  },
-  sendButton: {
-    backgroundColor: '#007AFF',
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  sendButtonDisabled: {
-    backgroundColor: '#1a1a1a',
-  },
+  container:      { flex: 1, backgroundColor: '#0a0a0a' },
+
+  header:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                    paddingHorizontal: 14, paddingVertical: 10,
+                    borderBottomWidth: 1, borderBottomColor: '#151515' },
+  chatBtn:        { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, maxWidth: '70%' },
+  chatBtnLabel:   { color: '#ccc', fontSize: 15, fontWeight: '500', flexShrink: 1 },
+  headerRight:    { flexDirection: 'row', gap: 8 },
+  iconBtn:        { padding: 6 },
+
+  statusStrip:    { flexDirection: 'row', alignItems: 'center',
+                    paddingHorizontal: 14, paddingVertical: 6, backgroundColor: '#0f0f0f' },
+  dot:            { width: 7, height: 7, borderRadius: 4, marginRight: 7 },
+  statusLabel:    { fontSize: 12 },
+
+  transcriptBar:  { flexDirection: 'row', alignItems: 'center',
+                    paddingHorizontal: 14, paddingVertical: 6, backgroundColor: '#0d1a10' },
+  transcriptText: { color: '#00e676', fontSize: 13, fontStyle: 'italic', flex: 1 },
+
+  messages:       { flex: 1 },
+  messagesContent:{ padding: 14, paddingBottom: 20 },
+
+  empty:          { alignItems: 'center', paddingVertical: 80 },
+  emptyTitle:     { color: '#444', fontSize: 16, marginTop: 16 },
+  emptySub:       { color: '#2a2a2a', fontSize: 13, marginTop: 6 },
+
+  inputRow:       { flexDirection: 'row', alignItems: 'flex-end', gap: 8,
+                    paddingHorizontal: 10, paddingVertical: 8,
+                    backgroundColor: '#0f0f0f', borderTopWidth: 1, borderTopColor: '#1a1a1a' },
+  input:          { flex: 1, backgroundColor: '#161616', borderRadius: 18,
+                    paddingHorizontal: 14, paddingVertical: 9, color: '#fff',
+                    fontSize: 16, maxHeight: 120 },
+  sendBtn:        { backgroundColor: '#7c7cff', width: 38, height: 38,
+                    borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
+  sendBtnOff:     { backgroundColor: '#161616' },
 });
 
 export default HomeScreen;
