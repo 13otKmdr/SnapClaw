@@ -1,0 +1,69 @@
+{
+  "expo": {
+    "name": "Voice Interface",
+    "slug": "voice-interface",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1a1a2e"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.voiceinterface.app",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Voice Interface needs microphone access to process your voice commands.",
+        "NSSpeechRecognitionUsageDescription": "Voice Interface needs speech recognition to understand your commands.",
+        "UIBackgroundModes": [
+          "audio"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "entitlements": {
+        "com.apple.developer.associated-domains": [
+          "webcredentials:voice.yourdomain.com"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1a1a2e"
+      },
+      "package": "com.voiceinterface.app",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.INTERNET"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Voice Interface needs microphone access to process your voice commands."
+        }
+      ],
+      [
+        "expo-secure-store"
+      ],
+      "expo-asset"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "your-project-id-here"
+      },
+      "apiUrl": "https://voice.yourdomain.com"
+    },
+    "owner": "13otKmdr"
+  }
+}

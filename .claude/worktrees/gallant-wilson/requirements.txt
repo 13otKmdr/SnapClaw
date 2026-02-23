@@ -1,0 +1,24 @@
+# FastAPI
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# HTTP + WebSocket
+httpx==0.26.0
+websockets==12.0
+
+# Agent Zero streaming (Socket.IO client)
+python-socketio[asyncio_client]==5.11.0
+
+# OpenAI (Whisper STT + TTS)
+openai>=1.12.0
+
+# SQLite async
+aiosqlite>=0.20.0
+
+# Config
+python-dotenv==1.0.0
+pydantic>=2.5.3
+
+# CORS / utilities
+orjson==3.9.12

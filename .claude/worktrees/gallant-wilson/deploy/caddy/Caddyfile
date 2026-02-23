@@ -1,0 +1,57 @@
+# Voice Interface API - Automatic SSL with Let's Encrypt
+# Replace voice.yourdomain.com with your actual domain
+
+# Production configuration
+voice.yourdomain.com {
+    # Reverse proxy to FastAPI backend
+    reverse_proxy backend:8000
+    
+    # Automatic HTTPS with Let's Encrypt
+    tls your-email@example.com
+    
+    # Security headers
+    header {
+        # Enable HSTS
+        Strict-Transport-Security "max-age=31536000; include-subdomains; preload"
+        # Prevent clickjacking
+        X-Frame-Options "DENY"
+        # Prevent MIME sniffing
+        X-Content-Type-Options "nosniff"
+        # XSS Protection
+        X-XSS-Protection "1; mode=block"
+        # Content Security Policy
+        Content-Security-Policy "default-src 'self'"
+        # Referrer Policy
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+    
+    # WebSocket support
+    @websockets {
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+    handle @websockets {
+        reverse_proxy backend:8000
+    }
+    
+    # Logging
+    log {
+        output file /var/log/caddy/voice-api.log
+        format json
+    }
+    
+    # Rate limiting (optional - requires Caddy with rate_limit module)
+    # rate_limit {
+    #     zone dynamic {
+    #         key {remote_host}
+    #         events 100
+    #         window 1m
+    #     }
+    # }
+}
+
+# Alternative: Local development with self-signed cert
+:443 {
+    tls internal
+    reverse_proxy backend:8000
+}
