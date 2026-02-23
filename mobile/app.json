@@ -11,7 +11,9 @@
       "resizeMode": "contain",
       "backgroundColor": "#1a1a2e"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.voiceinterface.app",
@@ -19,7 +21,9 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Voice Interface needs microphone access to process your voice commands.",
         "NSSpeechRecognitionUsageDescription": "Voice Interface needs speech recognition to understand your commands.",
-        "UIBackgroundModes": ["audio"],
+        "UIBackgroundModes": [
+          "audio"
+        ],
         "ITSAppUsesNonExemptEncryption": false
       },
       "entitlements": {
@@ -34,7 +38,10 @@
         "backgroundColor": "#1a1a2e"
       },
       "package": "com.voiceinterface.app",
-      "permissions": ["android.permission.RECORD_AUDIO", "android.permission.INTERNET"]
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.INTERNET"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -48,7 +55,8 @@
       ],
       [
         "expo-secure-store"
-      ]
+      ],
+      "expo-asset"
     ],
     "extra": {
       "eas": {
