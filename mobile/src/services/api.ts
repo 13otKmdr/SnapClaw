@@ -47,6 +47,38 @@ export class ApiService {
     return response.json();
   }
 
+  static async transcribeAudio(uri: string): Promise<string> {
+    const token = await AuthService.getToken();
+    const extension = (uri.split('.').pop() || 'wav').toLowerCase();
+    const typeByExt: Record<string, string> = {
+      wav: 'audio/wav',
+      mp3: 'audio/mpeg',
+      m4a: 'audio/m4a',
+      mp4: 'audio/mp4',
+      webm: 'audio/webm',
+    };
+    const mimeType = typeByExt[extension] || 'application/octet-stream';
+    const formData = new FormData();
+    formData.append('file', {
+      uri,
+      name: `voice-input.${extension}`,
+      type: mimeType,
+    } as any);
+
+    const response = await fetch(`${API_URL}/api/voice/transcribe`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      throw new Error('Audio transcription failed');
+    }
+
+    const data = await response.json();
+    return typeof data?.text === 'string' ? data.text : '';
+  }
+
   static async confirmAction(actionType: string, params: Record<string, any>, confirmed: boolean): Promise<any> {
     const response = await fetch(`${API_URL}/api/voice/confirm?action_type=${actionType}&confirmed=${confirmed}`, {
       method: 'POST',
