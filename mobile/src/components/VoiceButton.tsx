@@ -44,12 +44,30 @@ export const VoiceButton: React.FC = () => {
     return '#FFFFFF';
   };
 
+  const getAccessibilityLabel = () => {
+    if (isProcessing) return 'Voice Assistant processing';
+    if (isSpeaking) return 'Voice Assistant speaking';
+    if (isListening) return 'Voice Assistant listening';
+    return 'Voice Assistant idle';
+  };
+
+  const getAccessibilityHint = () => {
+    if (isProcessing) return 'Please wait for the process to complete';
+    if (isSpeaking) return 'Double tap to stop speaking';
+    if (isListening) return 'Double tap to stop listening';
+    return 'Double tap to start listening';
+  };
+
   return (
     <Animated.View style={{ transform: [{ scale }] }}>
       <TouchableOpacity
         style={[styles.button, isListening && styles.buttonActive]}
         onPress={handlePress}
         disabled={isProcessing}
+        accessibilityRole="button"
+        accessibilityLabel={getAccessibilityLabel()}
+        accessibilityHint={getAccessibilityHint()}
+        accessibilityState={{ disabled: isProcessing, busy: isProcessing }}
       >
         <Ionicons name={getIcon() as any} size={40} color={getColor()} />
       </TouchableOpacity>
