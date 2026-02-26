@@ -1,11 +1,12 @@
 """HTTP routes for orchestration task lifecycle management."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from auth import get_authenticated_user
 from .dependencies import get_task_manager
 from .models import TaskListResponse, TaskPriority, TaskResponse, TaskStatus
 
@@ -25,7 +26,10 @@ class UpdateTaskRequest(BaseModel):
 
 
 @router.post("", response_model=TaskResponse)
-async def create_task(request: CreateTaskRequest) -> TaskResponse:
+async def create_task(
+    request: CreateTaskRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+) -> TaskResponse:
     manager = get_task_manager()
     task = await manager.create_task(
         conversation_id=request.conversation_id,
@@ -42,6 +46,7 @@ async def list_tasks(
     conversation_id: str = Query(..., min_length=1),
     status: Optional[TaskStatus] = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
+    user: Dict[str, Any] = Depends(get_authenticated_user),
 ) -> TaskListResponse:
     manager = get_task_manager()
     tasks = await manager.list_tasks(conversation_id=conversation_id, status=status, limit=limit)
@@ -49,7 +54,11 @@ async def list_tasks(
 
 
 @router.get("/{task_id}", response_model=TaskResponse)
-async def get_task(task_id: str, refresh: bool = Query(default=True)) -> TaskResponse:
+async def get_task(
+    task_id: str,
+    refresh: bool = Query(default=True),
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+) -> TaskResponse:
     manager = get_task_manager()
     task = await manager.refresh_task_status(task_id) if refresh else await manager.get_task(task_id)
     if not task:
@@ -58,7 +67,11 @@ async def get_task(task_id: str, refresh: bool = Query(default=True)) -> TaskRes
 
 
 @router.post("/{task_id}/update", response_model=TaskResponse)
-async def update_task(task_id: str, request: UpdateTaskRequest) -> TaskResponse:
+async def update_task(
+    task_id: str,
+    request: UpdateTaskRequest,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+) -> TaskResponse:
     manager = get_task_manager()
     task = await manager.update_task(task_id, request.instruction)
     if not task:
@@ -67,7 +80,10 @@ async def update_task(task_id: str, request: UpdateTaskRequest) -> TaskResponse:
 
 
 @router.post("/{task_id}/cancel", response_model=TaskResponse)
-async def cancel_task(task_id: str) -> TaskResponse:
+async def cancel_task(
+    task_id: str,
+    user: Dict[str, Any] = Depends(get_authenticated_user),
+) -> TaskResponse:
     manager = get_task_manager()
     task = await manager.cancel_task(task_id)
     if not task:

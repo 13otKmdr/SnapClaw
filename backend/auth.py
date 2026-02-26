@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -145,3 +145,34 @@ def verify_api_key(key: str) -> Optional[Dict[str, Any]]:
         api_keys_db[key]["last_used"] = datetime.utcnow().isoformat()
         return api_keys_db[key]
     return None
+
+
+async def get_api_key_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    api_key: Optional[str] = Query(None),
+) -> Optional[Dict[str, Any]]:
+    if credentials:
+        token = credentials.credentials
+        if token.startswith("vi_"):
+            return verify_api_key(token)
+        # We can call get_current_user directly, passing credentials
+        # Note: get_current_user is designed as a dependency but works as a helper too
+        try:
+            user = await get_current_user(credentials)
+            if user:
+                return {"user_id": user.id, "username": user.username}
+        except HTTPException:
+            pass  # Fall through to check API key or return None
+
+    if api_key:
+        return verify_api_key(api_key)
+
+    return None
+
+
+async def get_authenticated_user(
+    user: Optional[Dict[str, Any]] = Depends(get_api_key_user),
+) -> Dict[str, Any]:
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user

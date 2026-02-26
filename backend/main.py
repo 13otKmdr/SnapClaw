@@ -9,9 +9,8 @@ from mimetypes import guess_type
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from auth import (
@@ -23,8 +22,7 @@ from auth import (
     create_access_token,
     create_api_key,
     create_user,
-    get_current_user,
-    verify_api_key,
+    get_api_key_user,
 )
 from integrations.agent_zero import get_agent_zero_client
 from orchestration import handle_realtime_proxy, shutdown_orchestration
@@ -118,25 +116,6 @@ class CommandRequest(BaseModel):
     params: Optional[Dict[str, Any]] = None
 
 
-bearer_scheme = HTTPBearer(auto_error=False)
-
-
-async def get_api_key_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-    api_key: str = Query(None),
-) -> Optional[Dict[str, Any]]:
-    if credentials:
-        token = credentials.credentials
-        if token.startswith("vi_"):
-            return verify_api_key(token)
-        user = await get_current_user(credentials)
-        if user:
-            return {"user_id": user.id, "username": user.username}
-
-    if api_key:
-        return verify_api_key(api_key)
-
-    return None
 
 
 @app.post("/api/auth/register", response_model=Token, tags=["Auth"])
