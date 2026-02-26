@@ -291,6 +291,58 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, [state.sessionId, appendMessage, handleAssistantText]);
 
+  // sendMessage is defined before stopListening so stopListening can call it
+  const sendMessage = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      appendMessage({
+        id: createMessageId(),
+        type: 'user',
+        text: trimmed,
+        timestamp: new Date(),
+      });
+
+      setState((prev) => ({
+        ...prev,
+        isProcessing: true,
+        transcript: '',
+        streamingText: '',
+        isListening: false,
+      }));
+
+      try {
+        if (websocket.isConnected()) {
+          websocket.sendVoice(trimmed);
+          return;
+        }
+
+        const response = await ApiService.processVoice(trimmed, state.sessionId);
+        handleAssistantText(response.text || 'No response text returned.');
+
+        if (response.requires_confirmation) {
+          setState((prev) => ({
+            ...prev,
+            requiresConfirmation: true,
+            confirmationPrompt: 'Do you want me to continue?',
+          }));
+        }
+      } catch (error) {
+        appendMessage({
+          id: createMessageId(),
+          type: 'system',
+          text: 'Error: Could not connect to server. Please check your connection.',
+          timestamp: new Date(),
+        });
+        setState((prev) => ({ ...prev, isProcessing: false }));
+      }
+    },
+    [appendMessage, handleAssistantText, state.sessionId],
+  );
+
   const stopListening = useCallback(() => {
     if (SpeechRecognition) {
       try {
@@ -346,28 +398,11 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             return;
           }
 
-          appendMessage({
-            id: createMessageId(),
-            type: 'user',
-            text: trimmed,
-            timestamp: new Date(),
-          });
+          setState((prev) => ({ ...prev, transcript: '' }));
 
-          setState((prev) => ({
-            ...prev,
-            transcript: '',
-          }));
-
-          const response = await ApiService.processVoice(trimmed, state.sessionId);
-          handleAssistantText(response.text || 'No response text returned.');
-
-          if (response.requires_confirmation) {
-            setState((prev) => ({
-              ...prev,
-              requiresConfirmation: true,
-              confirmationPrompt: 'Do you want me to continue?',
-            }));
-          }
+          // Route through sendMessage so WebSocket is used when connected,
+          // with automatic fallback to REST when offline.
+          await sendMessage(trimmed);
         } catch {
           appendMessage({
             id: createMessageId(),
@@ -382,58 +417,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
 
     setState((prev) => ({ ...prev, isListening: false }));
-  }, [appendMessage, handleAssistantText, state.sessionId]);
-
-  const sendMessage = useCallback(
-    async (text: string) => {
-      const trimmed = text.trim();
-      if (!trimmed) {
-        return;
-      }
-
-      appendMessage({
-        id: createMessageId(),
-        type: 'user',
-        text: trimmed,
-        timestamp: new Date(),
-      });
-
-      setState((prev) => ({
-        ...prev,
-        isProcessing: true,
-        transcript: '',
-        streamingText: '',
-        isListening: false,
-      }));
-
-      try {
-        if (websocket.isConnected()) {
-          websocket.sendVoice(trimmed);
-          return;
-        }
-
-        const response = await ApiService.processVoice(trimmed, state.sessionId);
-        handleAssistantText(response.text || 'No response text returned.');
-
-        if (response.requires_confirmation) {
-          setState((prev) => ({
-            ...prev,
-            requiresConfirmation: true,
-            confirmationPrompt: 'Do you want me to continue?',
-          }));
-        }
-      } catch (error) {
-        appendMessage({
-          id: createMessageId(),
-          type: 'system',
-          text: 'Error: Could not connect to server. Please check your connection.',
-          timestamp: new Date(),
-        });
-        setState((prev) => ({ ...prev, isProcessing: false }));
-      }
-    },
-    [appendMessage, handleAssistantText, state.sessionId],
-  );
+  }, [appendMessage, sendMessage]);
 
   const startListening = useCallback(async () => {
     try {
