@@ -12,16 +12,33 @@ import websockets
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .dependencies import get_task_manager, get_tool_router
-from .models import TaskEventResponse
+from .models import TaskEventResponse, TaskStatus
 from .tools import build_realtime_tool_specs
 
 
+# Terminal task statuses that warrant a voice notification back through GPT-4o.
+_TERMINAL_STATUSES = {
+    TaskStatus.SUCCEEDED,
+    TaskStatus.FAILED,
+    TaskStatus.CANCELED,
+}
+
 DEFAULT_ASSISTANT_INSTRUCTIONS = (
-    "You are a voice-first orchestration assistant with your own personality and memory. "
-    "Hold a natural conversation while delegating execution work to Agent Zero using tools. "
-    "When users ask to run work, create tasks with clear goals, then monitor progress using "
-    "list_tasks/check_task_status and narrate updates. If users change direction, call update_task. "
-    "If users stop work, call cancel_task."
+    "You are SnapClaw, a voice-first AI chief of staff. "
+    "Your role is to be the manager: you understand what the user wants, then delegate ALL "
+    "execution work to Agent Zero by calling the create_task tool. "
+    "You never perform tasks yourself — you delegate everything that requires action, "
+    "research, computation, file operations, or web access. "
+    "You only answer directly for simple conversational exchanges such as greetings, "
+    "clarifications about a previous result, or asking what tasks are running. "
+    "When the user asks you to do something actionable: "
+    "(1) briefly confirm you understand their goal, "
+    "(2) call create_task with a clear goal and any useful context, "
+    "(3) tell the user you have sent it to Agent Zero and will update them when it is done. "
+    "Use list_tasks and check_task_status to monitor progress. "
+    "When a task completes, narrate the result naturally in one or two sentences. "
+    "If the user changes direction mid-task, call update_task. "
+    "If the user wants to stop, call cancel_task."
 )
 
 
@@ -142,6 +159,11 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
 
     task_event_queue = await task_manager.subscribe(conversation_id)
 
+    # Shared event: set while GPT-4o is actively generating a response.
+    # _task_events_to_client waits for this to clear before injecting
+    # task-completion notifications so they arrive at a natural pause.
+    response_active = asyncio.Event()
+
     try:
         connect_kwargs: Dict[str, Any] = {
             "ping_interval": 20,
@@ -169,9 +191,17 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
                         tool_router,
                         conversation_id,
                         completed_tool_calls,
+                        response_active,
                     )
                 ),
-                asyncio.create_task(_task_events_to_client(websocket, task_event_queue)),
+                asyncio.create_task(
+                    _task_events_to_client(
+                        websocket,
+                        upstream,
+                        task_event_queue,
+                        response_active,
+                    )
+                ),
             ]
 
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -226,6 +256,7 @@ async def _upstream_to_client(
     tool_router: Any,
     conversation_id: str,
     completed_tool_calls: Set[str],
+    response_active: asyncio.Event,
 ) -> None:
     call_name_cache: Dict[str, str] = {}
     call_arg_fragments: Dict[str, str] = {}
@@ -246,6 +277,14 @@ async def _upstream_to_client(
             continue
 
         event_type = event.get("type")
+
+        # Track whether GPT-4o is actively generating so task-completion
+        # injection can wait for a natural pause.
+        if event_type == "response.created":
+            response_active.set()
+        elif event_type == "response.done":
+            response_active.clear()
+
         if event_type in {"response.output_item.added", "response.output_item.done", "conversation.item.created"}:
             item = event.get("item") or {}
             if item.get("type") == "function_call":
@@ -308,11 +347,73 @@ async def _upstream_to_client(
         )
 
 
-async def _task_events_to_client(websocket: WebSocket, queue: asyncio.Queue) -> None:
+async def _task_events_to_client(
+    websocket: WebSocket,
+    upstream: Any,
+    queue: asyncio.Queue,
+    response_active: asyncio.Event,
+) -> None:
+    """Forward task events to the mobile client.
+
+    For terminal task events (succeeded / failed / canceled), also inject a
+    notification into the GPT-4o upstream conversation so the assistant can
+    narrate the result aloud. The injection waits until GPT-4o is not actively
+    generating a response (natural pause), then sends a user-role message
+    followed by response.create.
+    """
     while True:
         event = await queue.get()
         payload = TaskEventResponse(payload=event)
         await _safe_send_json(websocket, payload.model_dump(mode="json"))
+
+        # Inject task-completion updates into the GPT-4o conversation so the
+        # assistant proactively narrates the outcome to the user.
+        task = getattr(event, "task", None) or (event if hasattr(event, "status") else None)
+        if task is None:
+            continue
+
+        status = getattr(task, "status", None)
+        if status not in _TERMINAL_STATUSES:
+            continue
+
+        goal = getattr(task, "goal", "") or "the task"
+        result = getattr(task, "result", None)
+        error = getattr(task, "error", None)
+
+        if status == TaskStatus.SUCCEEDED:
+            detail = f"Result: {result}" if result else "It completed successfully."
+        elif status == TaskStatus.FAILED:
+            detail = f"It failed. Reason: {error}" if error else "It failed with an unknown error."
+        else:
+            detail = "It was canceled."
+
+        notification_text = (
+            f"System update: The task '{goal}' has {status.value}. {detail} "
+            f"Please let the user know in a natural, conversational way."
+        )
+
+        # Wait for GPT-4o to finish any current response before injecting.
+        # We poll with a short sleep to avoid blocking the event loop.
+        for _ in range(30):  # wait up to ~3 seconds
+            if not response_active.is_set():
+                break
+            await asyncio.sleep(0.1)
+
+        try:
+            inject_event = {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": notification_text}],
+                },
+            }
+            await upstream.send(json.dumps(inject_event))
+            await upstream.send(json.dumps({"type": "response.create"}))
+        except Exception:
+            # If the upstream is closed, silently skip — the mobile already
+            # received the task_update event above.
+            pass
 
 
 async def _safe_send_json(websocket: WebSocket, payload: Dict[str, Any]) -> None:

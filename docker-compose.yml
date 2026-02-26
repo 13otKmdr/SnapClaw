@@ -34,15 +34,39 @@ services:
     restart: unless-stopped
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      # Agent Zero — points to the SnapClaw-managed agent-zero container on the
+      # internal Docker network. Override with AGENT_ZERO_URL env var if you
+      # want to point at an external instance instead.
       - AGENT_ZERO_URL=${AGENT_ZERO_URL:-http://agent-zero:50001}
+      - AGENT_ZERO_EXECUTOR=${AGENT_ZERO_EXECUTOR:-http}
+      - AGENT_ZERO_TIMEOUT_SECONDS=${AGENT_ZERO_TIMEOUT_SECONDS:-30}
+      - AGENT_ZERO_CREATE_PATH=${AGENT_ZERO_CREATE_PATH:-/api/task}
+      - AGENT_ZERO_STATUS_PATH=${AGENT_ZERO_STATUS_PATH:-/api/task/{task_id}}
+      - AGENT_ZERO_UPDATE_PATH=${AGENT_ZERO_UPDATE_PATH:-/api/task/{task_id}}
+      - AGENT_ZERO_CANCEL_PATH=${AGENT_ZERO_CANCEL_PATH:-/api/task/{task_id}}
+      - AGENT_ZERO_EXECUTE_FALLBACK_PATH=${AGENT_ZERO_EXECUTE_FALLBACK_PATH:-/api/execute}
       - OPENCLAW_URL=${OPENCLAW_URL:-http://openclaw:8080}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - DATABASE_URL=${DATABASE_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_REALTIME_MODEL=${OPENAI_REALTIME_MODEL:-gpt-4o-realtime-preview}
+      - OPENAI_REALTIME_URL=${OPENAI_REALTIME_URL:-wss://api.openai.com/v1/realtime}
+      - OPENAI_REALTIME_VOICE=${OPENAI_REALTIME_VOICE}
+      - REALTIME_PROVIDER=${REALTIME_PROVIDER}
+      - REALTIME_ENABLE_SERVER_VAD=${REALTIME_ENABLE_SERVER_VAD:-true}
+      - REALTIME_ASSISTANT_INSTRUCTIONS=${REALTIME_ASSISTANT_INSTRUCTIONS}
+      - TASK_STORE=${TASK_STORE:-memory}
+      - TASK_POLL_INTERVAL_SECONDS=${TASK_POLL_INTERVAL_SECONDS:-2}
+      - TASK_MAX_POLL_ERRORS=${TASK_MAX_POLL_ERRORS:-5}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
     volumes:
       - ./backend:/app/backend:ro
       - ./logs:/app/logs
     ports:
       - "8000:8000"
+    depends_on:
+      - redis
+      - agent-zero
     networks:
       - voice-network
     healthcheck:
@@ -51,7 +75,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # Redis for session management
+  # Redis for task store and session management
   redis:
     image: redis:7.2-alpine
     container_name: voice-redis
@@ -64,6 +88,29 @@ services:
       - voice-network
     command: redis-server --appendonly yes
 
+  # Agent Zero — dedicated instance for SnapClaw task delegation.
+  # Exposed on host port 50002 so it does not conflict with any other
+  # Agent Zero instance you may already be running on port 50001.
+  # The backend reaches it via the internal network as http://agent-zero:50001.
+  agent-zero:
+    image: frdel/agent-zero-run:latest
+    container_name: snapclaw-agent-zero
+    restart: unless-stopped
+    ports:
+      - "50002:50001"
+    volumes:
+      - agent_zero_data:/a0
+    environment:
+      - AGENT_ZERO_API_KEY=${AGENT_ZERO_API_KEY:-}
+    networks:
+      - voice-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
 networks:
   voice-network:
     driver: bridge
@@ -72,3 +119,4 @@ volumes:
   caddy_data:
   caddy_config:
   redis_data:
+  agent_zero_data:
