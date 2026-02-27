@@ -55,6 +55,7 @@ class APIKey(BaseModel):
 
 
 users_db: Dict[str, Dict[str, Any]] = {}
+users_email_db: Dict[str, str] = {}  # Map email -> user_id for O(1) lookup
 api_keys_db: Dict[str, Dict[str, Any]] = {}
 sessions_db: Dict[str, Dict[str, Any]] = {}
 
@@ -115,12 +116,23 @@ def create_user(email: str, username: str, password: str) -> User:
     }
 
     users_db[user_id] = user
+    users_email_db[email] = user_id
     return User(id=user_id, email=email, username=username, role="user")
 
 
+def get_user_by_email(email: str) -> Optional[User]:
+    user_id = users_email_db.get(email)
+    if user_id and user_id in users_db:
+        user_data = users_db[user_id]
+        return User(**user_data)
+    return None
+
+
 def authenticate_user(email: str, password: str) -> Optional[User]:
-    for user_data in users_db.values():
-        if user_data["email"] == email and verify_password(password, user_data["hashed_password"]):
+    user_id = users_email_db.get(email)
+    if user_id and user_id in users_db:
+        user_data = users_db[user_id]
+        if verify_password(password, user_data["hashed_password"]):
             safe = {k: v for k, v in user_data.items() if k != "hashed_password"}
             return User(**safe)
     return None
