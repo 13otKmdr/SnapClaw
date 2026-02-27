@@ -1,4 +1,4 @@
-## 2026-02-26 - Critical Auth Bypass in Orchestration
-**Vulnerability:** Orchestration API routes (/api/tasks) were completely unauthenticated, allowing full control over Agent Zero tasks.
-**Learning:** Router dependencies must be explicitly configured or inherited. Including a router in `main.py` via `app.include_router(orchestration_router)` does NOT automatically apply `app` level dependencies unless `dependencies` argument is used in `include_router`.
-**Prevention:** Always verify authentication on new endpoints with integration tests that assert 401 for unauthenticated requests.
+## 2026-02-22 - [Critical] Default Secrets Blocked
+**Vulnerability:** The application was configured to fall back to a hardcoded `JWT_SECRET_KEY` ("your-super-secret-key-change-in-production") if the environment variable was missing.
+**Learning:** Hardcoded fallbacks for critical secrets (even for "dev convenience") are dangerous because they can silently make production deployments insecure if configuration is missed.
+**Prevention:** Removed the default value and added a runtime check. The application now raises a `RuntimeError` on startup if `JWT_SECRET_KEY` is missing or matches the known insecure default, forcing secure configuration.

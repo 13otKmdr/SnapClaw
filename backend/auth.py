@@ -12,7 +12,18 @@ from pydantic import BaseModel, EmailStr
 import os
 
 
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "your-super-secret-key-change-in-production")
+# Security Check: Ensure a strong JWT_SECRET_KEY is provided in production.
+# The default value is strictly for local development/testing to prevent startup failures,
+# but using it triggers a RuntimeError to prevent accidental insecure deployments.
+_DEFAULT_SECRET = "your-super-secret-key-change-in-production"
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
+
+if not SECRET_KEY or SECRET_KEY == _DEFAULT_SECRET:
+    raise RuntimeError(
+        "Insecure JWT_SECRET_KEY detected! You must set a unique JWT_SECRET_KEY in your environment variables. "
+        "Do not use the default value."
+    )
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 
