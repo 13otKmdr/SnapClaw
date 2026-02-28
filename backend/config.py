@@ -20,11 +20,14 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        app_secret = os.environ.get("APP_SECRET")
+        if not app_secret:
+            raise RuntimeError("APP_SECRET environment variable is not set. Insecure default values are prohibited.")
         return cls(
             agent_zero_url=os.environ.get("AGENT_ZERO_URL", "http://jared-hp-elitedesk-800-g3-sff:50001"),
             agent_zero_api_key=os.environ.get("AGENT_ZERO_API_KEY", ""),
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
-            app_secret=os.environ.get("APP_SECRET", "change-me"),
+            app_secret=app_secret,
             tts_voice=os.environ.get("TTS_VOICE", "onyx"),
             db_path=os.environ.get("DB_PATH", "voice_sessions.db"),
         )
