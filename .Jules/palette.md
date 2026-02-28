@@ -1,3 +1,3 @@
-## 2024-12-07 - Dynamic Accessibility Labels for State Buttons
-**Learning:** For a single button that changes state (Idle/Listening/Speaking/Processing), using a dynamic `accessibilityLabel` that includes the state (e.g. "Voice Assistant listening") is more effective than just a static label + state attribute, as it immediately informs the user of the current context.
-**Action:** Combine component name and state in `accessibilityLabel` for multi-state toggle buttons.
+## 2024-05-17 - Icon-only buttons lack ARIA labels
+**Learning:** React Native's `TouchableOpacity` doesn't enforce accessibility labels by default. Several critical actions (Settings, Delete, Send) in `HomeScreen.tsx` are icon-only and invisible to screen readers. Destructive actions also lacked confirmations.
+**Action:** Always add `accessibilityRole="button"` and `accessibilityLabel` to icon-only `TouchableOpacity` components, and confirmation alerts for destructive actions.

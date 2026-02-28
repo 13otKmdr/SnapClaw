@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
@@ -65,12 +66,28 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
 
   // ── Render ──────────────────────────────────────────────────────────
 
+  const handleClearMessages = () => {
+    Alert.alert(
+      "Clear Messages",
+      "Are you sure you want to clear all messages in this chat?",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Clear", style: "destructive", onPress: clearMessages }
+      ]
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
 
       {/* ── Header ── */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => { refreshChats(); setChatModalVisible(true); }} style={styles.chatBtn}>
+        <TouchableOpacity
+          onPress={() => { refreshChats(); setChatModalVisible(true); }}
+          style={styles.chatBtn}
+          accessibilityRole="button"
+          accessibilityLabel="Open chats menu"
+        >
           <Ionicons name="chatbubbles-outline" size={22} color="#7c7cff" />
           <Text style={styles.chatBtnLabel} numberOfLines={1}>
             {activeChat?.name ?? 'Chats'}
@@ -79,10 +96,20 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
         </TouchableOpacity>
 
         <View style={styles.headerRight}>
-          <TouchableOpacity onPress={clearMessages} style={styles.iconBtn}>
+          <TouchableOpacity
+            onPress={handleClearMessages}
+            style={styles.iconBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Clear messages"
+          >
             <Ionicons name="trash-outline" size={20} color="#555" />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.iconBtn}>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('Settings')}
+            style={styles.iconBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Settings"
+          >
             <Ionicons name="settings-outline" size={20} color="#555" />
           </TouchableOpacity>
         </View>
@@ -149,6 +176,9 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
             style={[styles.sendBtn, !textInput.trim() && styles.sendBtnOff]}
             onPress={handleSend}
             disabled={!textInput.trim() || isProcessing}
+            accessibilityRole="button"
+            accessibilityLabel="Send message"
+            accessibilityState={{ disabled: !textInput.trim() || isProcessing }}
           >
             <Ionicons name="send" size={18} color={textInput.trim() ? '#fff' : '#333'} />
           </TouchableOpacity>
