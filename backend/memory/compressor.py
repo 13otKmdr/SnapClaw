@@ -10,11 +10,10 @@ Strategy (mirrors Agent Zero's approach):
 The compressed summary is stored on the Chat row and prepended as a
 'system' message when building context for Agent Zero.
 """
-import asyncio
 import logging
 from openai import AsyncOpenAI
 
-from .session import SessionStore, store as session_store
+from .session import store as session_store
 from ..config import settings
 
 log = logging.getLogger(__name__)
