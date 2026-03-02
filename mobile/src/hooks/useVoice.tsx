@@ -29,6 +29,7 @@ interface VoiceState {
   isSpeaking: boolean;
   liveSessionActive: boolean;
   isConnected: boolean;
+  connectionError: string | null;
   transcript: string;
   streamingText: string;
   messages: Message[];
@@ -171,6 +172,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     isSpeaking: false,
     liveSessionActive: false,
     isConnected: false,
+    connectionError: null,
     transcript: '',
     streamingText: '',
     messages: [],
@@ -190,6 +192,8 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const preferredVoiceIdRef = useRef<string | undefined>(undefined);
   const voiceResolutionAttemptedRef = useRef(false);
   const audioPlaybackRef = useRef<Audio.Sound | null>(null);
+  const wsReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsReconnectAttemptsRef = useRef(0);
 
   useEffect(() => {
     stateRef.current = state;
@@ -384,12 +388,38 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     let isMounted = true;
     const realtimeEnabled = websocket.isRealtimeEnabled();
     let healthPollTimer: ReturnType<typeof setInterval> | null = null;
+    const MAX_WS_RETRIES = 2;
+    const WS_RETRY_DELAY_MS = 4000;
+
+    const startHealthPolling = () => {
+      if (healthPollTimer) return;
+      healthPollTimer = setInterval(() => {
+        ApiService.healthCheck()
+          .then((healthy) => {
+            if (isMounted) {
+              setState((prev) => ({
+                ...prev,
+                isConnected: healthy,
+                connectionError: healthy ? null : prev.connectionError,
+              }));
+            }
+          })
+          .catch(() => {
+            if (isMounted) setState((prev) => ({ ...prev, isConnected: false }));
+          });
+      }, 10000);
+    };
 
     const connectWs = async () => {
       if (!realtimeEnabled) {
         const healthy = await ApiService.healthCheck();
         if (isMounted) {
-          setState((prev) => ({ ...prev, isConnected: healthy }));
+          setState((prev) => ({
+            ...prev,
+            isConnected: healthy,
+            connectionError: healthy ? null : 'Server unreachable — check Settings',
+          }));
+          if (!healthy) startHealthPolling();
         }
         return;
       }
@@ -397,11 +427,30 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       try {
         await websocket.connect(state.sessionId);
         if (isMounted) {
-          setState((prev) => ({ ...prev, isConnected: true }));
+          wsReconnectAttemptsRef.current = 0;
+          setState((prev) => ({ ...prev, isConnected: true, connectionError: null }));
         }
-      } catch (error) {
-        if (isMounted) {
-          setState((prev) => ({ ...prev, isConnected: false }));
+      } catch {
+        if (!isMounted) return;
+        wsReconnectAttemptsRef.current += 1;
+        const attempt = wsReconnectAttemptsRef.current;
+        if (attempt <= MAX_WS_RETRIES) {
+          setState((prev) => ({
+            ...prev,
+            isConnected: false,
+            connectionError: `Reconnecting… (${attempt}/${MAX_WS_RETRIES})`,
+          }));
+          wsReconnectTimerRef.current = setTimeout(() => {
+            wsReconnectTimerRef.current = null;
+            if (isMounted && !websocket.isConnected()) void connectWs();
+          }, WS_RETRY_DELAY_MS * attempt);
+        } else {
+          setState((prev) => ({
+            ...prev,
+            isConnected: false,
+            connectionError: 'Voice server offline — using text mode',
+          }));
+          startHealthPolling();
         }
       }
     };
@@ -484,19 +533,28 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     const onError = (event: any) => {
-      const message = typeof event?.error === 'string' ? event.error : 'Connection error';
+      const message =
+        typeof event?.message === 'string' ? event.message
+        : typeof event?.error === 'string' ? event.error
+        : 'Connection error';
       appendMessage({
         id: createMessageId(),
         type: 'system',
-        text: `Error: ${message}`,
+        text: `Connection error: ${message}`,
         timestamp: new Date(),
       });
       setState((prev) => ({ ...prev, isProcessing: false }));
     };
 
     const onDisconnected = () => {
-      if (isMounted) {
-        setState((prev) => ({ ...prev, isConnected: false }));
+      if (!isMounted) return;
+      setState((prev) => ({ ...prev, isConnected: false }));
+      // Attempt one silent reconnect after unexpected disconnect
+      if (realtimeEnabled && wsReconnectAttemptsRef.current < MAX_WS_RETRIES) {
+        wsReconnectTimerRef.current = setTimeout(() => {
+          wsReconnectTimerRef.current = null;
+          if (isMounted && !websocket.isConnected()) void connectWs();
+        }, WS_RETRY_DELAY_MS);
       }
     };
 
@@ -542,8 +600,10 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return () => {
       isMounted = false;
       clearTurnTimers();
-      if (healthPollTimer) {
-        clearInterval(healthPollTimer);
+      if (healthPollTimer) clearInterval(healthPollTimer);
+      if (wsReconnectTimerRef.current) {
+        clearTimeout(wsReconnectTimerRef.current);
+        wsReconnectTimerRef.current = null;
       }
       if (realtimeEnabled) {
         websocket.off('response', onResponse);
@@ -842,6 +902,11 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     stopSpeaking();
     stopListening(false);
     websocket.disconnect();
+    wsReconnectAttemptsRef.current = 0;
+    if (wsReconnectTimerRef.current) {
+      clearTimeout(wsReconnectTimerRef.current);
+      wsReconnectTimerRef.current = null;
+    }
     setState((prev) => ({
       ...prev,
       messages: [],
@@ -850,6 +915,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       liveSessionActive: false,
       requiresConfirmation: false,
       confirmationPrompt: null,
+      connectionError: null,
       sessionId: generateSessionId(),
     }));
   }, [clearTurnTimers, stopListening, stopSpeaking]);

@@ -22,6 +22,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList, 'Home'>;
 export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
   const {
     isListening, isProcessing, isSpeaking, liveSessionActive, isConnected,
+    connectionError,
     transcript, messages, streamingText,
     sendMessage,
     restoreMessages, clearMessages,
@@ -56,7 +57,8 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
     : isListening  ? 'Listening…'
     : liveSessionActive ? 'Live session on'
     : isConnected  ? 'Connected'
-    : 'Offline';
+    : connectionError   ? connectionError
+    : 'Offline — check Settings';
 
   const statusColor = isProcessing ? '#FFA500'
     : isSpeaking   ? '#ff6b6b'

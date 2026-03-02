@@ -48,6 +48,75 @@ voice_interface/
     └── performance/             # Latency benchmarks
 ```
 
+## Phone-Only Quickstart (Expo Go)
+
+The fastest way to run SnapClaw on a real phone without a simulator or build.
+
+### Prerequisites
+
+- Node.js 18+ and Python 3.11+ on your dev machine
+- [Expo Go](https://expo.dev/go) installed on your phone
+- Phone and dev machine on the **same Wi-Fi** (or use `--tunnel` for different networks)
+
+### 1. Start the backend
+
+```bash
+# From repo root
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env          # Edit .env — set OPENAI_API_KEY and JWT_SECRET_KEY at minimum
+uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 2. Configure mobile to point at your machine
+
+Run the helper to get your LAN IP and copy-paste env vars:
+
+```bash
+bash scripts/start-phone.sh
+```
+
+Then create (or update) `mobile/.env`:
+
+```bash
+# Replace 192.168.x.x with your LAN IP printed by start-phone.sh
+EXPO_PUBLIC_API_URL=http://192.168.x.x:8000
+EXPO_PUBLIC_WS_URL=ws://192.168.x.x:8000
+```
+
+> **Phone on a different network (cellular, guest Wi-Fi)?**
+> Use a tunnel: `cd mobile && npx expo start --tunnel`
+> Then set `EXPO_PUBLIC_API_URL=https://...` / `EXPO_PUBLIC_WS_URL=wss://...` to the tunnel URL.
+
+### 3. Start Metro and scan
+
+```bash
+cd mobile
+npm install        # first time only
+npx expo start
+```
+
+Scan the QR code with your phone's Camera (iOS) or the Expo Go app (Android).
+
+### 4. Verify connectivity
+
+The status strip at the top of the app shows the connection state:
+
+| Status | Meaning |
+|--------|---------|
+| Connected | Backend reachable, ready to use |
+| Reconnecting… (1/2) | WebSocket failed, retrying automatically |
+| Voice server offline — using text mode | WS unavailable; REST text fallback active |
+| Server unreachable — check Settings | Backend not reachable; update `mobile/.env` |
+
+If you see "Server unreachable", confirm the backend is running:
+
+```bash
+curl http://192.168.x.x:8000/health   # should return {"status":"healthy",...}
+```
+
+---
+
 ## 🚀 Quick Start (MVP)
 
 ### 1. Install Dependencies
