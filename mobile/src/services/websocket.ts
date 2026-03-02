@@ -40,6 +40,10 @@ class WebSocketService {
   private currentConversationId: string | null = null;
   private localChats: LocalChat[] = [];
 
+  // Audio response accumulation
+  private audioResponseChunks: string[] = [];
+  private lastResponseHadAudio: boolean = false;
+
   connect(conversationId: string): Promise<void> {
     if (!REALTIME_ENABLED) {
       this.disconnect();
@@ -51,6 +55,8 @@ class WebSocketService {
 
       this.currentConversationId = conversationId;
       this.assistantMessageIds.clear();
+      this.audioResponseChunks = [];
+      this.lastResponseHadAudio = false;
 
       const url = `${WS_BASE_URL}/ws/realtime/${encodeURIComponent(conversationId)}`;
       const socket = new WebSocket(url);
@@ -97,6 +103,8 @@ class WebSocketService {
       this.socket = null;
     }
     this.currentConversationId = null;
+    this.audioResponseChunks = [];
+    this.lastResponseHadAudio = false;
   }
 
   sendVoice(text: string) {
@@ -119,6 +127,34 @@ class WebSocketService {
 
     this.socket.send(JSON.stringify(userMessage));
     this.socket.send(JSON.stringify({ type: 'response.create' }));
+  }
+
+  /** Send base64 PCM16 audio through the WebSocket to OpenAI Realtime. */
+  sendAudioBuffer(base64Pcm16: string) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    this.socket.send(
+      JSON.stringify({
+        type: 'input_audio_buffer.append',
+        audio: base64Pcm16,
+      }),
+    );
+
+    this.socket.send(
+      JSON.stringify({
+        type: 'input_audio_buffer.commit',
+      }),
+    );
+
+    // Explicitly trigger a response since we're sending a complete recording
+    // (not streaming with server VAD).
+    this.socket.send(
+      JSON.stringify({
+        type: 'response.create',
+      }),
+    );
   }
 
   confirmAction(confirmed: boolean) {
@@ -201,8 +237,47 @@ class WebSocketService {
       return;
     }
 
+    // Track audio response chunks from OpenAI Realtime
+    if (payload.type === 'response.audio.delta') {
+      if (typeof payload.delta === 'string') {
+        this.audioResponseChunks.push(payload.delta);
+        this.lastResponseHadAudio = true;
+      }
+      return;
+    }
+
+    // Audio response complete — emit accumulated audio for playback
+    if (payload.type === 'response.audio.done') {
+      if (this.audioResponseChunks.length > 0) {
+        const fullAudio = this.audioResponseChunks.join('');
+        this.emit('audio_response', { audio: fullAudio });
+        this.audioResponseChunks = [];
+      }
+      return;
+    }
+
+    // Transcript of the assistant's audio response (for chat display)
+    if (payload.type === 'response.audio_transcript.done') {
+      const transcript = payload.transcript;
+      if (typeof transcript === 'string' && transcript.trim()) {
+        this.emit('audio_transcript', { text: transcript.trim() });
+      }
+      return;
+    }
+
+    // Transcript of the user's audio input (what OpenAI heard)
+    if (payload.type === 'conversation.item.input_audio_transcription.completed') {
+      const transcript = payload.transcript;
+      if (typeof transcript === 'string' && transcript.trim()) {
+        this.emit('input_transcript', { text: transcript.trim() });
+      }
+      return;
+    }
+
     if (payload.type === 'response.done') {
       this.emit('response_done', payload);
+      // Reset audio flag after response cycle completes
+      this.lastResponseHadAudio = false;
       return;
     }
 
@@ -213,6 +288,7 @@ class WebSocketService {
 
     this.emit('response', {
       text: assistantText,
+      hasAudio: this.lastResponseHadAudio,
       raw: payload,
     });
   }
@@ -257,11 +333,23 @@ class WebSocketService {
     if (itemId && this.assistantMessageIds.has(itemId)) {
       return null;
     }
+
+    const parts = Array.isArray(item.content) ? item.content : [];
+
+    // If any content part is audio, skip text extraction here.
+    // The audio_transcript handler will emit the text separately.
+    const hasAudio = parts.some((part: any) => part?.type === 'audio');
+    if (hasAudio) {
+      if (itemId) {
+        this.assistantMessageIds.add(itemId);
+      }
+      return null;
+    }
+
     if (itemId) {
       this.assistantMessageIds.add(itemId);
     }
 
-    const parts = Array.isArray(item.content) ? item.content : [];
     const texts: string[] = [];
 
     for (const part of parts) {

@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { Alert, NativeEventEmitter, NativeModules } from 'react-native';
+import { Alert, NativeEventEmitter, NativeModules, Platform } from 'react-native';
 import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
 import * as Speech from 'expo-speech';
 
 import { ApiService } from '../services/api';
@@ -78,14 +79,16 @@ const EXPO_FALLBACK_MAX_TURN_MS = 6500;
 const TTS_RATE = 0.92;
 const TTS_PITCH = 1.0;
 const PREFERRED_VOICE_HINTS = ['enhanced', 'premium', 'neural', 'natural', 'samantha', 'ava', 'victoria'];
+
+// OpenAI Realtime expects PCM16 at 24kHz. Record at 24kHz on iOS for a clean match.
 const RECORDING_OPTIONS: Audio.RecordingOptions = {
   isMeteringEnabled: true,
   ios: {
     extension: '.wav',
     audioQuality: Audio.IOSAudioQuality.MAX,
-    sampleRate: 16000,
+    sampleRate: 24000,
     numberOfChannels: 1,
-    bitRate: 256000,
+    bitRate: 384000,
     linearPCMBitDepth: 16,
     linearPCMIsBigEndian: false,
     linearPCMIsFloat: false,
@@ -104,6 +107,60 @@ const RECORDING_OPTIONS: Audio.RecordingOptions = {
     bitsPerSecond: 128000,
   },
 };
+
+/**
+ * Strip the 44-byte WAV header from a base64-encoded WAV file
+ * to get raw PCM16 data for OpenAI Realtime API.
+ */
+function stripWavHeader(wavBase64: string): string {
+  const binary = atob(wavBase64);
+  const pcmBinary = binary.substring(44);
+  return btoa(pcmBinary);
+}
+
+/**
+ * Build a WAV file from raw PCM16 base64 data.
+ * Returns the base64-encoded complete WAV file.
+ */
+function buildWavFromPcm16(pcm16Base64: string, sampleRate: number = 24000): string {
+  const pcmBinary = atob(pcm16Base64);
+  const dataLength = pcmBinary.length;
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const fileSize = 36 + dataLength;
+
+  // Build 44-byte WAV header
+  const header = new Uint8Array(44);
+  const view = new DataView(header.buffer);
+
+  // RIFF chunk descriptor
+  header[0] = 0x52; header[1] = 0x49; header[2] = 0x46; header[3] = 0x46; // "RIFF"
+  view.setUint32(4, fileSize, true);
+  header[8] = 0x57; header[9] = 0x41; header[10] = 0x56; header[11] = 0x45; // "WAVE"
+
+  // fmt sub-chunk
+  header[12] = 0x66; header[13] = 0x6d; header[14] = 0x74; header[15] = 0x20; // "fmt "
+  view.setUint32(16, 16, true); // subchunk1 size
+  view.setUint16(20, 1, true); // PCM format
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+
+  // data sub-chunk
+  header[36] = 0x64; header[37] = 0x61; header[38] = 0x74; header[39] = 0x61; // "data"
+  view.setUint32(40, dataLength, true);
+
+  let headerBinary = '';
+  for (let i = 0; i < header.length; i++) {
+    headerBinary += String.fromCharCode(header[i]);
+  }
+
+  return btoa(headerBinary + pcmBinary);
+}
 
 export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const canUseMicrophone = true;
@@ -132,6 +189,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const suppressAutoRestartRef = useRef(false);
   const preferredVoiceIdRef = useRef<string | undefined>(undefined);
   const voiceResolutionAttemptedRef = useRef(false);
+  const audioPlaybackRef = useRef<Audio.Sound | null>(null);
 
   useEffect(() => {
     stateRef.current = state;
@@ -213,6 +271,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }, 150);
   }, []);
 
+  /** Fallback TTS using device speech (expo-speech). Used only when no audio comes from Realtime. */
   const speak = useCallback(async (text: string) => {
     if (!text.trim()) {
       return;
@@ -244,8 +303,55 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const stopSpeaking = useCallback(() => {
     suppressAutoRestartRef.current = true;
     Speech.stop();
+    // Also stop any audio playback
+    if (audioPlaybackRef.current) {
+      audioPlaybackRef.current.stopAsync().catch(() => undefined);
+      audioPlaybackRef.current.unloadAsync().catch(() => undefined);
+      audioPlaybackRef.current = null;
+    }
     setState((prev) => ({ ...prev, isSpeaking: false }));
   }, []);
+
+  /** Play base64 PCM16 audio response from OpenAI Realtime via expo-av. */
+  const playAudioResponse = useCallback(async (pcm16Base64: string) => {
+    try {
+      // Build a WAV file from raw PCM16 data
+      const wavBase64 = buildWavFromPcm16(pcm16Base64, 24000);
+      const tempUri = (FileSystem.cacheDirectory || '') + `response_${Date.now()}.wav`;
+
+      await FileSystem.writeAsStringAsync(tempUri, wavBase64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      // Configure audio for playback
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+      });
+
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: tempUri },
+        { shouldPlay: true },
+      );
+
+      audioPlaybackRef.current = sound;
+      setState((prev) => ({ ...prev, isSpeaking: true, isProcessing: false }));
+
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.isLoaded && status.didJustFinish) {
+          sound.unloadAsync().catch(() => undefined);
+          FileSystem.deleteAsync(tempUri, { idempotent: true }).catch(() => undefined);
+          audioPlaybackRef.current = null;
+          setState((prev) => ({ ...prev, isSpeaking: false }));
+          maybeRestartListeningAfterSpeech();
+        }
+      });
+    } catch (err) {
+      console.warn('Audio playback failed:', err);
+      setState((prev) => ({ ...prev, isSpeaking: false, isProcessing: false }));
+      maybeRestartListeningAfterSpeech();
+    }
+  }, [maybeRestartListeningAfterSpeech]);
 
   const handleAssistantText = useCallback(
     (text: string) => {
@@ -300,9 +406,65 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     };
 
-    const onResponse = (data: { text?: string }) => {
+    const onResponse = (data: { text?: string; hasAudio?: boolean }) => {
       if (data?.text) {
-        handleAssistantText(data.text);
+        if (data.hasAudio) {
+          // Audio will play separately via onAudioResponse. Just add text to chat.
+          appendMessage({
+            id: createMessageId(),
+            type: 'assistant',
+            text: data.text,
+            timestamp: new Date(),
+          });
+          setState((prev) => ({
+            ...prev,
+            isProcessing: false,
+            streamingText: '',
+          }));
+        } else {
+          // Text-only response — use device TTS as fallback
+          handleAssistantText(data.text);
+        }
+      }
+    };
+
+    /** Play audio response from OpenAI Realtime. */
+    const onAudioResponse = (data: { audio: string }) => {
+      if (data?.audio) {
+        playAudioResponse(data.audio).catch(() => undefined);
+      }
+    };
+
+    /** Show the assistant's response text in chat (from audio transcript). */
+    const onAudioTranscript = (data: { text: string }) => {
+      if (data?.text && isMounted) {
+        appendMessage({
+          id: createMessageId(),
+          type: 'assistant',
+          text: data.text,
+          timestamp: new Date(),
+        });
+        setState((prev) => ({
+          ...prev,
+          isProcessing: false,
+          streamingText: '',
+        }));
+      }
+    };
+
+    /** Update user's placeholder message with actual transcript from OpenAI. */
+    const onInputTranscript = (data: { text: string }) => {
+      if (data?.text && isMounted) {
+        setState((prev) => {
+          const msgs = [...prev.messages];
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].type === 'user' && msgs[i].text === '[Voice message]') {
+              msgs[i] = { ...msgs[i], text: data.text };
+              break;
+            }
+          }
+          return { ...prev, messages: msgs, transcript: '' };
+        });
       }
     };
 
@@ -353,6 +515,9 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     connectWs();
     if (realtimeEnabled) {
       websocket.on('response', onResponse);
+      websocket.on('audio_response', onAudioResponse);
+      websocket.on('audio_transcript', onAudioTranscript);
+      websocket.on('input_transcript', onInputTranscript);
       websocket.on('task_update', onTaskUpdate);
       websocket.on('error', onError);
       websocket.on('connected', onConnected);
@@ -382,6 +547,9 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
       if (realtimeEnabled) {
         websocket.off('response', onResponse);
+        websocket.off('audio_response', onAudioResponse);
+        websocket.off('audio_transcript', onAudioTranscript);
+        websocket.off('input_transcript', onInputTranscript);
         websocket.off('task_update', onTaskUpdate);
         websocket.off('error', onError);
         websocket.off('connected', onConnected);
@@ -390,7 +558,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         websocket.disconnect();
       }
     };
-  }, [state.sessionId, appendMessage, clearTurnTimers, handleAssistantText]);
+  }, [state.sessionId, appendMessage, clearTurnTimers, handleAssistantText, playAudioResponse]);
 
   // sendMessage is defined before stopListening so stopListening can call it
   const sendMessage = useCallback(
@@ -494,6 +662,30 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             return;
           }
 
+          // --- REALTIME PATH: send audio through WebSocket ---
+          if (Platform.OS === 'ios' && websocket.isConnected()) {
+            const base64Audio = await FileSystem.readAsStringAsync(uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+
+            // Strip 44-byte WAV header to get raw PCM16
+            const pcm16Base64 = stripWavHeader(base64Audio);
+
+            // Add a placeholder user message (will be updated by input_transcript)
+            appendMessage({
+              id: createMessageId(),
+              type: 'user',
+              text: '[Voice message]',
+              timestamp: new Date(),
+            });
+            setState((prev) => ({ ...prev, transcript: '' }));
+
+            // Send audio to OpenAI Realtime via WebSocket
+            websocket.sendAudioBuffer(pcm16Base64);
+            return;
+          }
+
+          // --- FALLBACK PATH: REST API for Android or when WS disconnected ---
           const response = await ApiService.processVoiceAudio(uri, state.sessionId);
           const transcript = typeof response.entities?.transcript === 'string'
             ? response.entities.transcript.trim()

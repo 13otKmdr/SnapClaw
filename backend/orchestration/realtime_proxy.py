@@ -66,7 +66,7 @@ def _build_realtime_ws_url(provider: str) -> str:
         model = os.environ.get("ZAI_REALTIME_MODEL", "glm-realtime")
     else:
         base = os.environ.get("OPENAI_REALTIME_URL", "wss://api.openai.com/v1/realtime")
-        model = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime")
+        model = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17")
 
     query = urlencode({"model": model})
     return f"{base}?{query}"
@@ -79,14 +79,18 @@ def _build_session_update(conversation_id: str, provider: str) -> Dict[str, Any]
     model = (
         os.environ.get("ZAI_REALTIME_MODEL", "glm-realtime")
         if provider == "zai"
-        else os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime")
+        else os.environ.get("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17")
     )
 
     session: Dict[str, Any] = {
         "model": model,
+        "modalities": ["text", "audio"],
         "instructions": instructions,
         "tools": build_realtime_tool_specs(),
         "tool_choice": "auto",
+        "input_audio_format": "pcm16",
+        "output_audio_format": "pcm16",
+        "input_audio_transcription": {"model": "whisper-1"},
     }
 
     voice = (
