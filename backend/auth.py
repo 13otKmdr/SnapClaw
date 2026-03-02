@@ -58,6 +58,7 @@ class APIKey(BaseModel):
 
 
 users_db: Dict[str, Dict[str, Any]] = {}
+users_email_db: Dict[str, str] = {}  # email -> user_id mapping for O(1) lookups
 api_keys_db: Dict[str, Dict[str, Any]] = {}
 sessions_db: Dict[str, Dict[str, Any]] = {}
 
@@ -104,6 +105,14 @@ async def get_current_user(
     return User(**user_data)
 
 
+def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    """O(1) lookup of user by email."""
+    user_id = users_email_db.get(email)
+    if user_id:
+        return users_db.get(user_id)
+    return None
+
+
 def create_user(email: str, username: str, password: str) -> User:
     user_id = f"user_{len(users_db) + 1}"
     hashed_pw = hash_password(password)
@@ -118,14 +127,15 @@ def create_user(email: str, username: str, password: str) -> User:
     }
 
     users_db[user_id] = user
+    users_email_db[email] = user_id
     return User(id=user_id, email=email, username=username, role="user")
 
 
 def authenticate_user(email: str, password: str) -> Optional[User]:
-    for user_data in users_db.values():
-        if user_data["email"] == email and verify_password(password, user_data["hashed_password"]):
-            safe = {k: v for k, v in user_data.items() if k != "hashed_password"}
-            return User(**safe)
+    user_data = get_user_by_email(email)
+    if user_data and verify_password(password, user_data["hashed_password"]):
+        safe = {k: v for k, v in user_data.items() if k != "hashed_password"}
+        return User(**safe)
     return None
 
 

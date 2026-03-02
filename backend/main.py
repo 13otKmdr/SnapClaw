@@ -17,12 +17,12 @@ from auth import (
     Token,
     UserCreate,
     UserLogin,
-    api_keys_db,
     authenticate_user,
     create_access_token,
     create_api_key,
     create_user,
     get_api_key_user,
+    get_user_by_email,
 )
 from integrations.agent_zero import get_agent_zero_client
 from orchestration import handle_realtime_proxy, shutdown_orchestration
@@ -120,9 +120,8 @@ class CommandRequest(BaseModel):
 
 @app.post("/api/auth/register", response_model=Token, tags=["Auth"])
 async def register(user_data: UserCreate):
-    for user in api_keys_db.values():
-        if user.get("email") == user_data.email:
-            raise HTTPException(400, "Email already registered")
+    if get_user_by_email(user_data.email):
+        raise HTTPException(400, "Email already registered")
 
     user = create_user(user_data.email, user_data.username, user_data.password)
     token = create_access_token({"sub": user.id, "email": user.email})
