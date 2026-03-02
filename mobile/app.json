@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Voice Interface",
-    "slug": "voice-interface",
+    "name": "SnapClaw",
+    "slug": "snapclaw",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -44,7 +44,12 @@
       ]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "name": "SnapClaw",
+      "shortName": "SnapClaw",
+      "themeColor": "#0a0a0a",
+      "backgroundColor": "#0a0a0a",
+      "display": "standalone"
     },
     "plugins": [
       [
@@ -62,7 +67,7 @@
       "eas": {
         "projectId": "your-project-id-here"
       },
-      "apiUrl": "https://voice.yourdomain.com"
+      "apiUrl": "http://100.89.247.64:8000"
     },
     "owner": "13otKmdr"
   }

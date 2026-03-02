@@ -26,7 +26,7 @@ interface Props {
 }
 
 export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
-  const [serverUrl, setServerUrl] = useState('https://38.242.132.60:8000');
+  const [serverUrl, setServerUrl] = useState('http://100.89.247.64:8000');
   const [apiKey, setApiKey] = useState('');
   const [autoSpeak, setAutoSpeak] = useState(true);
   const [confirmActions, setConfirmActions] = useState(true);

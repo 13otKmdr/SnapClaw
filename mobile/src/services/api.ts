@@ -1,7 +1,7 @@
 // API Service with Authentication
 import { AuthService } from './authService';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://voice.yourdomain.com';
+const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://100.89.247.64:8000';
 
 export interface VoiceResponse {
   text: string;
@@ -24,6 +24,22 @@ export interface TelegramChat {
 }
 
 export class ApiService {
+  private static async parseError(response: Response, fallback: string): Promise<Error> {
+    try {
+      const data = await response.json();
+      const detail =
+        typeof data?.detail === 'string' ? data.detail
+        : typeof data?.message === 'string' ? data.message
+        : null;
+      if (detail) {
+        return new Error(detail);
+      }
+    } catch {
+      // ignore parse errors and use fallback
+    }
+    return new Error(fallback);
+  }
+
   private static async getHeaders(): Promise<HeadersInit> {
     const token = await AuthService.getToken();
     return {
@@ -40,9 +56,7 @@ export class ApiService {
       body: JSON.stringify({ text, session_id: sessionId }),
     });
 
-    if (!response.ok) {
-      throw new Error('Voice processing failed');
-    }
+    if (!response.ok) throw await this.parseError(response, 'Voice processing failed');
 
     return response.json();
   }
@@ -71,9 +85,7 @@ export class ApiService {
       body: formData,
     });
 
-    if (!response.ok) {
-      throw new Error('Audio transcription failed');
-    }
+    if (!response.ok) throw await this.parseError(response, 'Audio transcription failed');
 
     const data = await response.json();
     return typeof data?.text === 'string' ? data.text : '';
@@ -105,9 +117,7 @@ export class ApiService {
       body: formData,
     });
 
-    if (!response.ok) {
-      throw new Error('Voice audio processing failed');
-    }
+    if (!response.ok) throw await this.parseError(response, 'Voice audio processing failed');
 
     return response.json();
   }
@@ -119,9 +129,7 @@ export class ApiService {
       body: JSON.stringify(params),
     });
 
-    if (!response.ok) {
-      throw new Error('Action confirmation failed');
-    }
+    if (!response.ok) throw await this.parseError(response, 'Action confirmation failed');
 
     return response.json();
   }
@@ -132,9 +140,7 @@ export class ApiService {
       headers: await this.getHeaders(),
     });
 
-    if (!response.ok) {
-      throw new Error('Failed to get Telegram dialogs');
-    }
+    if (!response.ok) throw await this.parseError(response, 'Failed to get Telegram dialogs');
 
     const data = await response.json();
     return data.dialogs;
@@ -147,9 +153,7 @@ export class ApiService {
       body: JSON.stringify({ chat_id: chatId, text }),
     });
 
-    if (!response.ok) {
-      throw new Error('Failed to send Telegram message');
-    }
+    if (!response.ok) throw await this.parseError(response, 'Failed to send Telegram message');
 
     return response.json();
   }
@@ -162,9 +166,7 @@ export class ApiService {
       body: JSON.stringify({ command: prompt, params: { context } }),
     });
 
-    if (!response.ok) {
-      throw new Error('Agent Zero execution failed');
-    }
+    if (!response.ok) throw await this.parseError(response, 'Agent Zero execution failed');
 
     return response.json();
   }
@@ -174,9 +176,7 @@ export class ApiService {
       headers: await this.getHeaders(),
     });
 
-    if (!response.ok) {
-      throw new Error('Failed to get capabilities');
-    }
+    if (!response.ok) throw await this.parseError(response, 'Failed to get capabilities');
 
     return response.json();
   }
@@ -187,9 +187,7 @@ export class ApiService {
       headers: await this.getHeaders(),
     });
 
-    if (!response.ok) {
-      throw new Error('Failed to get OpenClaw tools');
-    }
+    if (!response.ok) throw await this.parseError(response, 'Failed to get OpenClaw tools');
 
     return response.json();
   }
@@ -201,9 +199,7 @@ export class ApiService {
       body: JSON.stringify({ command: tool, target, params }),
     });
 
-    if (!response.ok) {
-      throw new Error('OpenClaw execution failed');
-    }
+    if (!response.ok) throw await this.parseError(response, 'OpenClaw execution failed');
 
     return response.json();
   }

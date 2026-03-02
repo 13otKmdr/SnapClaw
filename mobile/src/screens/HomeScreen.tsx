@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
@@ -22,7 +23,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList, 'Home'>;
 export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
   const {
     isListening, isProcessing, isSpeaking, liveSessionActive, isConnected,
-    connectionError,
+    connectionError, canUseMicrophone, retryConnection,
     transcript, messages, streamingText,
     sendMessage,
     restoreMessages, clearMessages,
@@ -52,13 +53,13 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
 
   // ── Status ──────────────────────────────────────────────────────────
 
-  const statusLabel = isProcessing ? 'Thinking…'
+  const statusLabel = isProcessing ? 'Processing your request…'
     : isSpeaking   ? 'Speaking…'
     : isListening  ? 'Listening…'
     : liveSessionActive ? 'Live session on'
     : isConnected  ? 'Connected'
-    : connectionError   ? connectionError
-    : 'Offline — check Settings';
+    : connectionError   ? `Offline: ${connectionError}`
+    : 'Offline — tap retry';
 
   const statusColor = isProcessing ? '#FFA500'
     : isSpeaking   ? '#ff6b6b'
@@ -112,7 +113,20 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
       {/* ── Status strip ── */}
       <View style={styles.statusStrip}>
         <View style={[styles.dot, { backgroundColor: statusColor }]} />
-        <Text style={[styles.statusLabel, { color: statusColor }]}>{statusLabel}</Text>
+        <Text style={[styles.statusLabel, { color: statusColor }]} numberOfLines={1}>
+          {statusLabel}
+        </Text>
+        {!isConnected && (
+          <TouchableOpacity
+            onPress={retryConnection}
+            style={styles.retryBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Retry connection"
+          >
+            <Ionicons name="refresh" size={14} color="#fff" />
+            <Text style={styles.retryText}>Retry</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* ── Transcript bar ── */}
@@ -136,6 +150,13 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
             <Ionicons name="mic-outline" size={56} color="#222" />
             <Text style={styles.emptyTitle}>Tap once to start a live voice session</Text>
             <Text style={styles.emptySub}>SnapClaw orchestrates agents while you keep talking</Text>
+            {!canUseMicrophone && (
+              <View style={styles.errorBox}>
+                <Text style={styles.errorText}>
+                  Microphone is unavailable in this browser/device configuration.
+                </Text>
+              </View>
+            )}
           </View>
         )}
 
@@ -146,6 +167,12 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
         {/* Live streaming text from Agent Zero */}
         {streamingText ? (
           <StreamingMessage text={streamingText} isStreaming={true} />
+        ) : null}
+        {isProcessing && !streamingText ? (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator size="small" color="#7c7cff" />
+            <Text style={styles.loadingText}>Working…</Text>
+          </View>
         ) : null}
       </ScrollView>
 
@@ -174,7 +201,11 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
             accessibilityLabel="Send message"
             accessibilityState={{ disabled: !textInput.trim() || isProcessing }}
           >
-            <Ionicons name="send" size={18} color={textInput.trim() ? '#fff' : '#333'} />
+            {isProcessing ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="send" size={18} color={textInput.trim() ? '#fff' : '#333'} />
+            )}
           </TouchableOpacity>
           <VoiceButton />
         </View>
@@ -208,7 +239,10 @@ const styles = StyleSheet.create({
   statusStrip:    { flexDirection: 'row', alignItems: 'center',
                     paddingHorizontal: 14, paddingVertical: 6, backgroundColor: '#0f0f0f' },
   dot:            { width: 7, height: 7, borderRadius: 4, marginRight: 7 },
-  statusLabel:    { fontSize: 12 },
+  statusLabel:    { fontSize: 12, flex: 1 },
+  retryBtn:       { flexDirection: 'row', alignItems: 'center', backgroundColor: '#2a2a34',
+                    borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4, gap: 4 },
+  retryText:      { color: '#fff', fontSize: 12, fontWeight: '600' },
 
   transcriptBar:  { flexDirection: 'row', alignItems: 'center',
                     paddingHorizontal: 14, paddingVertical: 6, backgroundColor: '#0d1a10' },
@@ -220,6 +254,10 @@ const styles = StyleSheet.create({
   empty:          { alignItems: 'center', paddingVertical: 80 },
   emptyTitle:     { color: '#444', fontSize: 16, marginTop: 16 },
   emptySub:       { color: '#2a2a2a', fontSize: 13, marginTop: 6 },
+  errorBox:       { marginTop: 16, backgroundColor: '#2f1416', borderRadius: 10, padding: 10, maxWidth: 320 },
+  errorText:      { color: '#ffb4b8', fontSize: 12, textAlign: 'center' },
+  loadingRow:     { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, paddingHorizontal: 8 },
+  loadingText:    { color: '#8f8fff', fontSize: 13 },
 
   inputRow:       { flexDirection: 'row', alignItems: 'flex-end', gap: 8,
                     paddingHorizontal: 10, paddingVertical: 8,

@@ -4,21 +4,30 @@ import { Ionicons } from '@expo/vector-icons';
 import { useVoice } from '../hooks/useVoice';
 
 export const VoiceButton: React.FC = () => {
-  const { isListening, isProcessing, isSpeaking, liveSessionActive, toggleLiveSession } = useVoice();
+  const { isListening, isProcessing, isSpeaking, liveSessionActive, toggleLiveSession, canUseMicrophone } = useVoice();
   const [scale] = React.useState(new Animated.Value(1));
+  const pulseRef = React.useRef<Animated.CompositeAnimation | null>(null);
 
   React.useEffect(() => {
     if (liveSessionActive || isListening || isSpeaking) {
-      Animated.loop(
+      pulseRef.current?.stop();
+      pulseRef.current = Animated.loop(
         Animated.sequence([
           Animated.timing(scale, { toValue: 1.1, duration: 500, useNativeDriver: true }),
           Animated.timing(scale, { toValue: 1, duration: 500, useNativeDriver: true }),
         ])
-      ).start();
+      );
+      pulseRef.current.start();
     } else {
+      pulseRef.current?.stop();
+      pulseRef.current = null;
       scale.setValue(1);
     }
-  }, [isListening, isSpeaking, liveSessionActive]);
+    return () => {
+      pulseRef.current?.stop();
+      pulseRef.current = null;
+    };
+  }, [isListening, isSpeaking, liveSessionActive, scale]);
 
   const handlePress = () => {
     toggleLiveSession().catch(() => undefined);
@@ -32,6 +41,7 @@ export const VoiceButton: React.FC = () => {
   };
 
   const getColor = () => {
+    if (!canUseMicrophone) return '#666';
     if (isProcessing && !liveSessionActive) return '#FFA500';
     if (isSpeaking) return '#FF4444';
     if (isListening || liveSessionActive) return '#00FF00';
@@ -39,12 +49,14 @@ export const VoiceButton: React.FC = () => {
   };
 
   const getAccessibilityLabel = () => {
+    if (!canUseMicrophone) return 'Microphone unavailable';
     if (liveSessionActive) return 'End live voice session';
     if (isProcessing) return 'Voice Assistant processing';
     return 'Start live voice session';
   };
 
   const getAccessibilityHint = () => {
+    if (!canUseMicrophone) return 'Enable microphone permissions and supported browser features';
     if (liveSessionActive) return 'Double tap to interrupt and end live voice session';
     if (isProcessing) return 'Please wait for the process to complete';
     return 'Double tap to start live voice session';
@@ -55,11 +67,13 @@ export const VoiceButton: React.FC = () => {
       <TouchableOpacity
         style={[styles.button, liveSessionActive && styles.buttonActive]}
         onPress={handlePress}
-        disabled={isProcessing && !liveSessionActive}
+        activeOpacity={0.85}
+        delayPressIn={0}
+        disabled={!canUseMicrophone || (isProcessing && !liveSessionActive)}
         accessibilityRole="button"
         accessibilityLabel={getAccessibilityLabel()}
         accessibilityHint={getAccessibilityHint()}
-        accessibilityState={{ disabled: isProcessing && !liveSessionActive, busy: isProcessing }}
+        accessibilityState={{ disabled: !canUseMicrophone || (isProcessing && !liveSessionActive), busy: isProcessing }}
       >
         <Ionicons name={getIcon() as any} size={40} color={getColor()} />
       </TouchableOpacity>

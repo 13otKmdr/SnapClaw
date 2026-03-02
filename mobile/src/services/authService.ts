@@ -1,7 +1,7 @@
 // Authentication Service
 import * as SecureStore from 'expo-secure-store';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://voice.yourdomain.com';
+const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://100.89.247.64:8000';
 
 export interface User {
   id: string;

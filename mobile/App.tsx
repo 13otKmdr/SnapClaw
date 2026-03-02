@@ -6,10 +6,16 @@ import { StatusBar } from 'expo-status-bar';
 import HomeScreen from './src/screens/HomeScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import { VoiceProvider } from './src/hooks/useVoice';
+import { configureWebAppShell, registerWebServiceWorker } from './src/utils/webApp';
 
 const Stack = createNativeStackNavigator();
 
 export default function App() {
+  React.useEffect(() => {
+    configureWebAppShell();
+    void registerWebServiceWorker();
+  }, []);
+
   return (
     <SafeAreaProvider>
       <VoiceProvider>
@@ -26,7 +32,7 @@ export default function App() {
             <Stack.Screen 
               name="Home" 
               component={HomeScreen}
-              options={{ title: 'Voice AI' }}
+              options={{ title: 'SnapClaw' }}
             />
             <Stack.Screen 
               name="Settings" 

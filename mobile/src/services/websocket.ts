@@ -1,7 +1,7 @@
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000';
+const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://100.89.247.64:8000';
 const RAW_WS_BASE_URL = process.env.EXPO_PUBLIC_WS_URL || API_URL;
 const REALTIME_ENABLED = ['1', 'true', 'yes'].includes(
-  (process.env.EXPO_PUBLIC_REALTIME_ENABLED || '').toLowerCase(),
+  (process.env.EXPO_PUBLIC_REALTIME_ENABLED || 'true').toLowerCase(),
 );
 
 const normalizeBaseUrl = (value: string): string => value.replace(/\/$/, '');
@@ -68,12 +68,13 @@ class WebSocketService {
       };
 
       const onError = (event: Event) => {
+        const message = `WebSocket connection failed (${url})`;
         this.emit('error', {
           type: 'connection_error',
-          message: 'WebSocket connection failed',
+          message,
           raw: event,
         });
-        reject(new Error('WebSocket connection failed'));
+        reject(new Error(message));
       };
 
       const onClose = () => {

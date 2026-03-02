@@ -14,6 +14,34 @@ type SpeechRecognitionModule = {
 
 const SpeechRecognition = NativeModules.SpeechRecognition as SpeechRecognitionModule | undefined;
 
+type WebSpeechRecognitionInstance = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+  onstart: ((event: Event) => void) | null;
+  onresult: ((event: any) => void) | null;
+  onerror: ((event: { error?: string; message?: string }) => void) | null;
+  onend: ((event: Event) => void) | null;
+};
+
+type WebSpeechRecognitionCtor = new () => WebSpeechRecognitionInstance;
+
+type WebWindow = {
+  navigator?: { mediaDevices?: { getUserMedia?: unknown } };
+  speechSynthesis?: {
+    cancel: () => void;
+    speak: (utterance: unknown) => void;
+  };
+  AudioContext?: new () => any;
+  webkitAudioContext?: new () => any;
+  webkitSpeechRecognition?: WebSpeechRecognitionCtor;
+  SpeechRecognition?: WebSpeechRecognitionCtor;
+};
+
 interface Message {
   id: string;
   type: 'user' | 'assistant' | 'system';
@@ -62,6 +90,7 @@ interface VoiceContextType extends VoiceState {
   restoreMessages: (chat: RestoredChat, messages: StoredMessage[]) => void;
   clearMessages: () => void;
   clearHistory: () => void;
+  retryConnection: () => void;
 }
 
 const VoiceContext = createContext<VoiceContextType | null>(null);
@@ -164,7 +193,12 @@ function buildWavFromPcm16(pcm16Base64: string, sampleRate: number = 24000): str
 }
 
 export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const canUseMicrophone = true;
+  const [retryToken, setRetryToken] = useState(0);
+  const webWindow = (typeof globalThis !== 'undefined' ? (globalThis as any).window : undefined) as WebWindow | undefined;
+  const canUseMicrophone = Platform.OS !== 'web'
+    || !webWindow
+    || !!webWindow.navigator?.mediaDevices?.getUserMedia
+    || !!(webWindow.webkitSpeechRecognition || webWindow.SpeechRecognition);
 
   const [state, setState] = useState<VoiceState>({
     isListening: false,
@@ -194,6 +228,8 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const audioPlaybackRef = useRef<Audio.Sound | null>(null);
   const wsReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wsReconnectAttemptsRef = useRef(0);
+  const webRecognitionRef = useRef<WebSpeechRecognitionInstance | null>(null);
+  const webSpeechHadResultRef = useRef(false);
 
   useEffect(() => {
     stateRef.current = state;
@@ -275,13 +311,47 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }, 150);
   }, []);
 
-  /** Fallback TTS using device speech (expo-speech). Used only when no audio comes from Realtime. */
+  const speakWebTts = useCallback((text: string): boolean => {
+    const runtimeWindow = (typeof globalThis !== 'undefined' ? (globalThis as any).window : undefined) as WebWindow | undefined;
+    if (Platform.OS !== 'web' || !runtimeWindow?.speechSynthesis) {
+      return false;
+    }
+
+    try {
+      const UtteranceCtor = (globalThis as any).SpeechSynthesisUtterance;
+      if (!UtteranceCtor) {
+        return false;
+      }
+      const utterance = new UtteranceCtor(text);
+      utterance.lang = 'en-US';
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      utterance.onend = () => {
+        setState((prev) => ({ ...prev, isSpeaking: false }));
+        maybeRestartListeningAfterSpeech();
+      };
+      utterance.onerror = () => {
+        setState((prev) => ({ ...prev, isSpeaking: false }));
+        maybeRestartListeningAfterSpeech();
+      };
+      runtimeWindow.speechSynthesis.cancel();
+      runtimeWindow.speechSynthesis.speak(utterance);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [maybeRestartListeningAfterSpeech]);
+
+  /** Fallback TTS using Web Speech API on web or expo-speech on native. */
   const speak = useCallback(async (text: string) => {
     if (!text.trim()) {
       return;
     }
 
     setState((prev) => ({ ...prev, isSpeaking: true }));
+    if (speakWebTts(text)) {
+      return;
+    }
     const preferredVoice = await resolvePreferredVoice();
 
     Speech.speak(text, {
@@ -302,10 +372,14 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         maybeRestartListeningAfterSpeech();
       },
     });
-  }, [maybeRestartListeningAfterSpeech, resolvePreferredVoice]);
+  }, [maybeRestartListeningAfterSpeech, resolvePreferredVoice, speakWebTts]);
 
   const stopSpeaking = useCallback(() => {
     suppressAutoRestartRef.current = true;
+    const runtimeWindow = (typeof globalThis !== 'undefined' ? (globalThis as any).window : undefined) as WebWindow | undefined;
+    if (Platform.OS === 'web' && runtimeWindow?.speechSynthesis) {
+      runtimeWindow.speechSynthesis.cancel();
+    }
     Speech.stop();
     // Also stop any audio playback
     if (audioPlaybackRef.current) {
@@ -319,6 +393,47 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   /** Play base64 PCM16 audio response from OpenAI Realtime via expo-av. */
   const playAudioResponse = useCallback(async (pcm16Base64: string) => {
     try {
+      if (Platform.OS === 'web') {
+        const runtimeWindow = (typeof globalThis !== 'undefined' ? (globalThis as any).window : undefined) as WebWindow | undefined;
+        if (!runtimeWindow) {
+          return;
+        }
+        const binary = atob(pcm16Base64);
+        const pcm = new Int16Array(binary.length / 2);
+        for (let i = 0; i < pcm.length; i++) {
+          const lo = binary.charCodeAt(i * 2);
+          const hi = binary.charCodeAt(i * 2 + 1);
+          let sample = (hi << 8) | lo;
+          if (sample >= 0x8000) sample -= 0x10000;
+          pcm[i] = sample;
+        }
+
+        const AudioContextCtor = runtimeWindow.AudioContext || runtimeWindow.webkitAudioContext;
+        if (!AudioContextCtor) {
+          throw new Error('AudioContext unavailable');
+        }
+        const audioCtx = new AudioContextCtor();
+        const audioBuffer = audioCtx.createBuffer(1, pcm.length, 24000);
+        const channel = audioBuffer.getChannelData(0);
+        for (let i = 0; i < pcm.length; i++) {
+          channel[i] = pcm[i] / 32768;
+        }
+
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioCtx.destination);
+
+        setState((prev) => ({ ...prev, isSpeaking: true, isProcessing: false }));
+        source.onended = () => {
+          setState((prev) => ({ ...prev, isSpeaking: false }));
+          void audioCtx.close();
+          maybeRestartListeningAfterSpeech();
+        };
+
+        source.start(0);
+        return;
+      }
+
       // Build a WAV file from raw PCM16 data
       const wavBase64 = buildWavFromPcm16(pcm16Base64, 24000);
       const tempUri = (FileSystem.cacheDirectory || '') + `response_${Date.now()}.wav`;
@@ -430,15 +545,16 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           wsReconnectAttemptsRef.current = 0;
           setState((prev) => ({ ...prev, isConnected: true, connectionError: null }));
         }
-      } catch {
+      } catch (err: any) {
         if (!isMounted) return;
+        const errorMessage = typeof err?.message === 'string' ? err.message : 'Unable to connect to voice server';
         wsReconnectAttemptsRef.current += 1;
         const attempt = wsReconnectAttemptsRef.current;
         if (attempt <= MAX_WS_RETRIES) {
           setState((prev) => ({
             ...prev,
             isConnected: false,
-            connectionError: `Reconnecting… (${attempt}/${MAX_WS_RETRIES})`,
+            connectionError: `${errorMessage}. Reconnecting… (${attempt}/${MAX_WS_RETRIES})`,
           }));
           wsReconnectTimerRef.current = setTimeout(() => {
             wsReconnectTimerRef.current = null;
@@ -448,7 +564,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setState((prev) => ({
             ...prev,
             isConnected: false,
-            connectionError: 'Voice server offline — using text mode',
+            connectionError: `${errorMessage}. Voice server offline — using text mode`,
           }));
           startHealthPolling();
         }
@@ -543,7 +659,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         text: `Connection error: ${message}`,
         timestamp: new Date(),
       });
-      setState((prev) => ({ ...prev, isProcessing: false }));
+      setState((prev) => ({ ...prev, isProcessing: false, connectionError: message, isConnected: false }));
     };
 
     const onDisconnected = () => {
@@ -600,6 +716,14 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return () => {
       isMounted = false;
       clearTurnTimers();
+      if (webRecognitionRef.current) {
+        try {
+          webRecognitionRef.current.abort();
+        } catch {
+          // noop
+        }
+        webRecognitionRef.current = null;
+      }
       if (healthPollTimer) clearInterval(healthPollTimer);
       if (wsReconnectTimerRef.current) {
         clearTimeout(wsReconnectTimerRef.current);
@@ -618,7 +742,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         websocket.disconnect();
       }
     };
-  }, [state.sessionId, appendMessage, clearTurnTimers, handleAssistantText, playAudioResponse]);
+  }, [retryToken, state.sessionId, appendMessage, clearTurnTimers, handleAssistantText, playAudioResponse]);
 
   // sendMessage is defined before stopListening so stopListening can call it
   const sendMessage = useCallback(
@@ -647,6 +771,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       try {
         if (websocket.isConnected()) {
           websocket.sendVoice(trimmed);
+          voiceTurnInFlightRef.current = false;
           return;
         }
 
@@ -660,14 +785,19 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             confirmationPrompt: 'Do you want me to continue?',
           }));
         }
-      } catch (error) {
+        voiceTurnInFlightRef.current = false;
+      } catch (error: any) {
+        const message = typeof error?.message === 'string'
+          ? error.message
+          : 'Could not connect to server';
         appendMessage({
           id: createMessageId(),
           type: 'system',
-          text: 'Error: Could not connect to server. Please check your connection.',
+          text: `Error: ${message}. Please check your connection and retry.`,
           timestamp: new Date(),
         });
-        setState((prev) => ({ ...prev, isProcessing: false }));
+        setState((prev) => ({ ...prev, isProcessing: false, connectionError: message, isConnected: false }));
+        voiceTurnInFlightRef.current = false;
       }
     },
     [appendMessage, clearTurnTimers, handleAssistantText, state.sessionId],
@@ -675,6 +805,18 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const stopListening = useCallback((processTurn = true) => {
     clearTurnTimers();
+
+    if (Platform.OS === 'web' && webRecognitionRef.current) {
+      try {
+        if (processTurn) {
+          webRecognitionRef.current.stop();
+        } else {
+          webRecognitionRef.current.abort();
+        }
+      } catch {
+        // noop
+      }
+    }
 
     if (SpeechRecognition) {
       try {
@@ -799,6 +941,87 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     try {
       setState((prev) => ({ ...prev, isListening: true, transcript: '' }));
+
+      if (Platform.OS === 'web') {
+        const webWindow = (typeof globalThis !== 'undefined' ? (globalThis as any).window : undefined) as WebWindow | undefined;
+        const RecognitionCtor = webWindow?.webkitSpeechRecognition || webWindow?.SpeechRecognition;
+        if (RecognitionCtor) {
+          const recognition = new RecognitionCtor();
+          webRecognitionRef.current = recognition;
+          webSpeechHadResultRef.current = false;
+
+          recognition.lang = 'en-US';
+          recognition.continuous = false;
+          recognition.interimResults = true;
+          recognition.maxAlternatives = 1;
+
+          recognition.onstart = () => {
+            setState((prev) => ({ ...prev, isListening: true, transcript: 'Listening...' }));
+          };
+
+          recognition.onresult = (event: any) => {
+            let finalText = '';
+            let interimText = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+              const chunk = String(event.results[i]?.[0]?.transcript || '').trim();
+              if (!chunk) continue;
+              if (event.results[i].isFinal) {
+                finalText = `${finalText} ${chunk}`.trim();
+              } else {
+                interimText = `${interimText} ${chunk}`.trim();
+              }
+            }
+
+            if (interimText) {
+              setState((prev) => ({ ...prev, transcript: interimText }));
+            }
+
+            if (finalText && !voiceTurnInFlightRef.current) {
+              webSpeechHadResultRef.current = true;
+              voiceTurnInFlightRef.current = true;
+              setState((prev) => ({ ...prev, transcript: finalText, isListening: false }));
+              recognition.stop();
+              sendMessage(finalText).catch(() => undefined);
+            }
+          };
+
+          recognition.onerror = (event) => {
+            const err = typeof event?.error === 'string' ? event.error : 'speech_error';
+            if (err !== 'aborted') {
+              setState((prev) => ({
+                ...prev,
+                isListening: false,
+                transcript: '',
+                connectionError: err === 'not-allowed'
+                  ? 'Microphone access denied in Safari'
+                  : `Speech recognition error: ${err}`,
+              }));
+            }
+          };
+
+          recognition.onend = () => {
+            webRecognitionRef.current = null;
+            const shouldRestart =
+              stateRef.current.liveSessionActive &&
+              !stateRef.current.isProcessing &&
+              !stateRef.current.isSpeaking &&
+              !voiceTurnInFlightRef.current &&
+              !webSpeechHadResultRef.current;
+            setState((prev) => ({ ...prev, isListening: false, transcript: '' }));
+            if (shouldRestart) {
+              autoRestartTimerRef.current = setTimeout(() => {
+                autoRestartTimerRef.current = null;
+                if (stateRef.current.liveSessionActive) {
+                  void startListeningRef.current?.();
+                }
+              }, 250);
+            }
+          };
+
+          recognition.start();
+          return;
+        }
+      }
 
       if (canUseMicrophone && SpeechRecognition) {
         voiceTurnInFlightRef.current = false;
@@ -949,6 +1172,21 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }));
   }, []);
 
+  const retryConnection = useCallback(() => {
+    wsReconnectAttemptsRef.current = 0;
+    if (wsReconnectTimerRef.current) {
+      clearTimeout(wsReconnectTimerRef.current);
+      wsReconnectTimerRef.current = null;
+    }
+    websocket.disconnect();
+    setState((prev) => ({
+      ...prev,
+      isConnected: false,
+      connectionError: 'Retrying connection…',
+    }));
+    setRetryToken((prev) => prev + 1);
+  }, []);
+
   return (
     <VoiceContext.Provider
       value={{
@@ -964,6 +1202,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         restoreMessages,
         clearMessages,
         clearHistory,
+        retryConnection,
       }}
     >
       {children}
