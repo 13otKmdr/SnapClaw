@@ -250,12 +250,20 @@ For mobile clients, point transport to your backend:
 For audio-capable OpenRouter models (for example `openai/gpt-audio-mini`), use the audio route:
 - `POST /api/voice/process-audio` with multipart `file` + `session_id`
 - Backend tries OpenRouter Responses audio input first, then falls back to transcription + text generation
-- Text-only `POST /api/voice/process` remains available for keyboard/chat flows
+- Audio route uses `OPENROUTER_MODEL` (audio-capable model)
+- Text-only `POST /api/voice/process` remains available for keyboard/chat flows and auto-falls back to `OPENROUTER_TEXT_MODEL` when `OPENROUTER_MODEL` is audio/realtime-only
 
 Recommended env for audio models:
 - `OPENROUTER_MODEL=openai/gpt-audio-mini`
+- `OPENROUTER_TEXT_MODEL=openai/gpt-4o-mini`
 - `OPENROUTER_API_MODE=responses` (or `auto`)
 - `OPENROUTER_RESPONSES_MODALITIES=text`
+
+## Live Voice Session Mode v1
+
+- Tap once on the mic to start a continuous live voice session.
+- Tap again to end the live session and interrupt any active assistant speech.
+- In fallback recording mode, each turn auto-stops after a short window and loops to the next turn while the live session stays active.
 
 ## Local Whisper Fallback
 

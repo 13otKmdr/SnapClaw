@@ -4,11 +4,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useVoice } from '../hooks/useVoice';
 
 export const VoiceButton: React.FC = () => {
-  const { isListening, isProcessing, isSpeaking, startListening, stopListening, stopSpeaking } = useVoice();
+  const { isListening, isProcessing, isSpeaking, liveSessionActive, toggleLiveSession } = useVoice();
   const [scale] = React.useState(new Animated.Value(1));
 
   React.useEffect(() => {
-    if (isListening || isSpeaking) {
+    if (liveSessionActive || isListening || isSpeaking) {
       Animated.loop(
         Animated.sequence([
           Animated.timing(scale, { toValue: 1.1, duration: 500, useNativeDriver: true }),
@@ -18,56 +18,48 @@ export const VoiceButton: React.FC = () => {
     } else {
       scale.setValue(1);
     }
-  }, [isListening, isSpeaking]);
+  }, [isListening, isSpeaking, liveSessionActive]);
 
   const handlePress = () => {
-    if (isSpeaking) {
-      stopSpeaking();
-    } else if (isListening) {
-      stopListening();
-    } else {
-      startListening();
-    }
+    toggleLiveSession().catch(() => undefined);
   };
 
   const getIcon = () => {
-    if (isProcessing) return 'hourglass';
-    if (isSpeaking) return 'stop';
+    if (isProcessing && !liveSessionActive) return 'hourglass';
+    if (isSpeaking || liveSessionActive) return 'stop';
     if (isListening) return 'mic';
     return 'mic-outline';
   };
 
   const getColor = () => {
-    if (isProcessing) return '#FFA500';
+    if (isProcessing && !liveSessionActive) return '#FFA500';
     if (isSpeaking) return '#FF4444';
-    if (isListening) return '#00FF00';
+    if (isListening || liveSessionActive) return '#00FF00';
     return '#FFFFFF';
   };
 
   const getAccessibilityLabel = () => {
+    if (liveSessionActive) return 'End live voice session';
     if (isProcessing) return 'Voice Assistant processing';
-    if (isSpeaking) return 'Interrupt response';
-    if (isListening) return 'End live voice session';
     return 'Start live voice session';
   };
 
   const getAccessibilityHint = () => {
+    if (liveSessionActive) return 'Double tap to interrupt and end live voice session';
     if (isProcessing) return 'Please wait for the process to complete';
-    if (isSpeaking) return 'Double tap to interrupt response';
-    if (isListening) return 'Double tap to end live voice session';
     return 'Double tap to start live voice session';
   };
 
   return (
     <Animated.View style={{ transform: [{ scale }] }}>
       <TouchableOpacity
-        style={[styles.button, isListening && styles.buttonActive]}
+        style={[styles.button, liveSessionActive && styles.buttonActive]}
         onPress={handlePress}
-        disabled={isProcessing}
+        disabled={isProcessing && !liveSessionActive}
         accessibilityRole="button"
         accessibilityLabel={getAccessibilityLabel()}
         accessibilityHint={getAccessibilityHint()}
-        accessibilityState={{ disabled: isProcessing, busy: isProcessing }}
+        accessibilityState={{ disabled: isProcessing && !liveSessionActive, busy: isProcessing }}
       >
         <Ionicons name={getIcon() as any} size={40} color={getColor()} />
       </TouchableOpacity>

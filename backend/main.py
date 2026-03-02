@@ -35,6 +35,7 @@ from orchestration.routes import router as orchestration_router
 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "z-ai/glm-5")
+OPENROUTER_TEXT_MODEL = os.environ.get("OPENROUTER_TEXT_MODEL", "openai/gpt-4o-mini")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_API_MODE = os.environ.get("OPENROUTER_API_MODE", "auto").strip().lower()
 OPENROUTER_RESPONSES_MODALITIES = os.environ.get("OPENROUTER_RESPONSES_MODALITIES", "text")
@@ -413,7 +414,7 @@ async def generate_llm_response(session_id: str, user_text: str) -> str:
     history[:] = history[-12:]
 
     if OPENROUTER_API_KEY:
-        reply = await _call_openrouter(history)
+        reply = await _call_openrouter(history, _resolve_openrouter_text_model())
     elif ZAI_API_KEY:
         reply = await _call_zai(history)
     else:
@@ -424,17 +425,29 @@ async def generate_llm_response(session_id: str, user_text: str) -> str:
     return reply
 
 
-async def _call_openrouter(history: List[Dict[str, str]]) -> str:
+async def _call_openrouter(history: List[Dict[str, str]], model: str) -> str:
     if OPENROUTER_API_MODE == "chat":
-        methods = [_call_openrouter_chat, _call_openrouter_responses]
+        methods = [
+            lambda turns: _call_openrouter_chat(turns, model),
+            lambda turns: _call_openrouter_responses(turns, model),
+        ]
     elif OPENROUTER_API_MODE == "responses":
-        methods = [_call_openrouter_responses, _call_openrouter_chat]
+        methods = [
+            lambda turns: _call_openrouter_responses(turns, model),
+            lambda turns: _call_openrouter_chat(turns, model),
+        ]
     else:
-        prefers_responses = _model_prefers_responses(OPENROUTER_MODEL)
+        prefers_responses = _model_prefers_responses(model)
         methods = (
-            [_call_openrouter_responses, _call_openrouter_chat]
+            [
+                lambda turns: _call_openrouter_responses(turns, model),
+                lambda turns: _call_openrouter_chat(turns, model),
+            ]
             if prefers_responses
-            else [_call_openrouter_chat, _call_openrouter_responses]
+            else [
+                lambda turns: _call_openrouter_chat(turns, model),
+                lambda turns: _call_openrouter_responses(turns, model),
+            ]
         )
 
     first_method, second_method = methods
@@ -449,13 +462,13 @@ async def _call_openrouter(history: List[Dict[str, str]]) -> str:
         return first_error.user_message
 
 
-async def _call_openrouter_chat(history: List[Dict[str, str]]) -> str:
+async def _call_openrouter_chat(history: List[Dict[str, str]], model: str) -> str:
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": OPENROUTER_MODEL,
+        "model": model,
         "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + history,
     }
     try:
@@ -477,13 +490,13 @@ async def _call_openrouter_chat(history: List[Dict[str, str]]) -> str:
         raise OpenRouterCallError(f"OpenRouter request failed: {exc}") from exc
 
 
-async def _call_openrouter_responses(history: List[Dict[str, str]]) -> str:
+async def _call_openrouter_responses(history: List[Dict[str, str]], model: str) -> str:
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": OPENROUTER_MODEL,
+        "model": model,
         "input": [{"role": "system", "content": SYSTEM_PROMPT}] + history,
         "modalities": _parse_openrouter_modalities(),
     }
@@ -652,6 +665,12 @@ def _infer_audio_format(filename: str) -> str:
 def _model_prefers_responses(model_name: str) -> bool:
     name = model_name.lower()
     return "audio" in name or "realtime" in name
+
+
+def _resolve_openrouter_text_model() -> str:
+    primary = OPENROUTER_MODEL.strip()
+    text_fallback = OPENROUTER_TEXT_MODEL.strip() or "openai/gpt-4o-mini"
+    return text_fallback if _model_prefers_responses(primary) else primary
 
 
 def _parse_openrouter_modalities() -> List[str]:

@@ -26,6 +26,7 @@ interface VoiceState {
   isListening: boolean;
   isProcessing: boolean;
   isSpeaking: boolean;
+  liveSessionActive: boolean;
   isConnected: boolean;
   transcript: string;
   streamingText: string;
@@ -51,6 +52,7 @@ interface VoiceContextType extends VoiceState {
   canUseMicrophone: boolean;
   startListening: () => Promise<void>;
   stopListening: () => void;
+  toggleLiveSession: () => Promise<void>;
   speak: (text: string) => Promise<void>;
   stopSpeaking: () => void;
   sendMessage: (text: string) => Promise<void>;
@@ -72,6 +74,7 @@ export const useVoice = (): VoiceContextType => {
 
 const generateSessionId = () => `session_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 const createMessageId = () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+const EXPO_FALLBACK_MAX_TURN_MS = 6500;
 const RECORDING_OPTIONS: Audio.RecordingOptions = {
   isMeteringEnabled: true,
   ios: {
@@ -106,6 +109,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     isListening: false,
     isProcessing: false,
     isSpeaking: false,
+    liveSessionActive: false,
     isConnected: false,
     transcript: '',
     streamingText: '',
@@ -117,12 +121,53 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const eventEmitterRef = useRef<NativeEventEmitter | null>(null);
   const recordingRef = useRef<Audio.Recording | null>(null);
+  const stateRef = useRef(state);
+  const startListeningRef = useRef<(() => Promise<void>) | null>(null);
+  const voiceTurnInFlightRef = useRef(false);
+  const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressAutoRestartRef = useRef(false);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  const clearTurnTimers = useCallback(() => {
+    if (autoStopTimerRef.current) {
+      clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = null;
+    }
+    if (autoRestartTimerRef.current) {
+      clearTimeout(autoRestartTimerRef.current);
+      autoRestartTimerRef.current = null;
+    }
+  }, []);
 
   const appendMessage = useCallback((message: Message) => {
     setState((prev) => ({
       ...prev,
       messages: [...prev.messages, message],
     }));
+  }, []);
+
+  const maybeRestartListeningAfterSpeech = useCallback(() => {
+    if (suppressAutoRestartRef.current) {
+      suppressAutoRestartRef.current = false;
+      return;
+    }
+    if (!stateRef.current.liveSessionActive || stateRef.current.isListening || stateRef.current.isProcessing) {
+      return;
+    }
+    if (autoRestartTimerRef.current) {
+      clearTimeout(autoRestartTimerRef.current);
+    }
+    autoRestartTimerRef.current = setTimeout(() => {
+      autoRestartTimerRef.current = null;
+      if (!stateRef.current.liveSessionActive || stateRef.current.isListening || stateRef.current.isProcessing) {
+        return;
+      }
+      void startListeningRef.current?.();
+    }, 150);
   }, []);
 
   const speak = useCallback(async (text: string) => {
@@ -136,13 +181,23 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       language: 'en-US',
       rate: 1.0,
       pitch: 1.0,
-      onDone: () => setState((prev) => ({ ...prev, isSpeaking: false })),
-      onError: () => setState((prev) => ({ ...prev, isSpeaking: false })),
-      onStop: () => setState((prev) => ({ ...prev, isSpeaking: false })),
+      onDone: () => {
+        setState((prev) => ({ ...prev, isSpeaking: false }));
+        maybeRestartListeningAfterSpeech();
+      },
+      onError: () => {
+        setState((prev) => ({ ...prev, isSpeaking: false }));
+        maybeRestartListeningAfterSpeech();
+      },
+      onStop: () => {
+        setState((prev) => ({ ...prev, isSpeaking: false }));
+        maybeRestartListeningAfterSpeech();
+      },
     });
-  }, []);
+  }, [maybeRestartListeningAfterSpeech]);
 
   const stopSpeaking = useCallback(() => {
+    suppressAutoRestartRef.current = true;
     Speech.stop();
     setState((prev) => ({ ...prev, isSpeaking: false }));
   }, []);
@@ -276,6 +331,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     return () => {
       isMounted = false;
+      clearTurnTimers();
       if (healthPollTimer) {
         clearInterval(healthPollTimer);
       }
@@ -289,7 +345,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         websocket.disconnect();
       }
     };
-  }, [state.sessionId, appendMessage, handleAssistantText]);
+  }, [state.sessionId, appendMessage, clearTurnTimers, handleAssistantText]);
 
   // sendMessage is defined before stopListening so stopListening can call it
   const sendMessage = useCallback(
@@ -306,6 +362,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         timestamp: new Date(),
       });
 
+      clearTurnTimers();
       setState((prev) => ({
         ...prev,
         isProcessing: true,
@@ -340,10 +397,12 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setState((prev) => ({ ...prev, isProcessing: false }));
       }
     },
-    [appendMessage, handleAssistantText, state.sessionId],
+    [appendMessage, clearTurnTimers, handleAssistantText, state.sessionId],
   );
 
-  const stopListening = useCallback(() => {
+  const stopListening = useCallback((processTurn = true) => {
+    clearTurnTimers();
+
     if (SpeechRecognition) {
       try {
         SpeechRecognition.stopRecognizing();
@@ -367,6 +426,11 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           });
 
           const uri = recording.getURI();
+          if (!processTurn) {
+            setState((prev) => ({ ...prev, isListening: false, transcript: '' }));
+            return;
+          }
+
           setState((prev) => ({
             ...prev,
             isListening: false,
@@ -415,31 +479,58 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             timestamp: new Date(),
           });
           setState((prev) => ({ ...prev, isProcessing: false, transcript: '' }));
+        } finally {
+          voiceTurnInFlightRef.current = false;
         }
       })();
       return;
     }
 
+    voiceTurnInFlightRef.current = false;
     setState((prev) => ({ ...prev, isListening: false }));
-  }, [appendMessage, handleAssistantText, state.sessionId]);
+  }, [appendMessage, clearTurnTimers, handleAssistantText, state.sessionId]);
 
   const startListening = useCallback(async () => {
+    if (
+      stateRef.current.isListening ||
+      stateRef.current.isProcessing ||
+      stateRef.current.isSpeaking ||
+      voiceTurnInFlightRef.current
+    ) {
+      return;
+    }
+
     try {
       setState((prev) => ({ ...prev, isListening: true, transcript: '' }));
 
       if (canUseMicrophone && SpeechRecognition) {
+        voiceTurnInFlightRef.current = false;
         eventEmitterRef.current = new NativeEventEmitter(SpeechRecognition as any);
 
         eventEmitterRef.current.addListener('onSpeechResults', (event: any) => {
           const text = event?.value?.[0];
+          if (voiceTurnInFlightRef.current) {
+            return;
+          }
           if (typeof text === 'string' && text.trim()) {
+            voiceTurnInFlightRef.current = true;
+            stopListening(false);
             setState((prev) => ({ ...prev, transcript: text }));
             sendMessage(text).catch(() => undefined);
           }
         });
 
         eventEmitterRef.current.addListener('onSpeechError', () => {
-          stopListening();
+          voiceTurnInFlightRef.current = false;
+          stopListening(false);
+          if (stateRef.current.liveSessionActive && !autoRestartTimerRef.current) {
+            autoRestartTimerRef.current = setTimeout(() => {
+              autoRestartTimerRef.current = null;
+              if (stateRef.current.liveSessionActive) {
+                void startListeningRef.current?.();
+              }
+            }, 250);
+          }
         });
 
         SpeechRecognition.startRecognizing('en-US');
@@ -448,7 +539,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
-        setState((prev) => ({ ...prev, isListening: false }));
+        setState((prev) => ({ ...prev, isListening: false, liveSessionActive: false }));
         Alert.alert('Microphone Permission Needed', 'Please allow microphone access to record voice input.');
         return;
       }
@@ -462,11 +553,40 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       await recording.prepareToRecordAsync(RECORDING_OPTIONS);
       await recording.startAsync();
       recordingRef.current = recording;
+      voiceTurnInFlightRef.current = true;
+      autoStopTimerRef.current = setTimeout(() => {
+        autoStopTimerRef.current = null;
+        if (recordingRef.current) {
+          stopListening(true);
+        }
+      }, EXPO_FALLBACK_MAX_TURN_MS);
       setState((prev) => ({ ...prev, transcript: 'Listening...' }));
     } catch {
-      setState((prev) => ({ ...prev, isListening: false }));
+      voiceTurnInFlightRef.current = false;
+      setState((prev) => ({ ...prev, isListening: false, liveSessionActive: false }));
     }
   }, [canUseMicrophone, sendMessage, stopListening]);
+
+  useEffect(() => {
+    startListeningRef.current = startListening;
+  }, [startListening]);
+
+  const toggleLiveSession = useCallback(async () => {
+    if (stateRef.current.liveSessionActive) {
+      clearTurnTimers();
+      setState((prev) => ({ ...prev, liveSessionActive: false, transcript: '' }));
+      stopSpeaking();
+      stopListening(false);
+      return;
+    }
+
+    if (stateRef.current.isProcessing) {
+      return;
+    }
+
+    setState((prev) => ({ ...prev, liveSessionActive: true }));
+    await startListening();
+  }, [clearTurnTimers, startListening, stopListening, stopSpeaking]);
 
   const confirmAction = useCallback(
     async (confirmed: boolean) => {
@@ -481,17 +601,21 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   );
 
   const clearHistory = useCallback(() => {
+    clearTurnTimers();
+    stopSpeaking();
+    stopListening(false);
     websocket.disconnect();
     setState((prev) => ({
       ...prev,
       messages: [],
       transcript: '',
       streamingText: '',
+      liveSessionActive: false,
       requiresConfirmation: false,
       confirmationPrompt: null,
       sessionId: generateSessionId(),
     }));
-  }, []);
+  }, [clearTurnTimers, stopListening, stopSpeaking]);
 
   const restoreMessages = useCallback((_: RestoredChat, storedMessages: StoredMessage[]) => {
     const mapped: Message[] = storedMessages.map((message) => ({
@@ -529,6 +653,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         canUseMicrophone,
         startListening,
         stopListening,
+        toggleLiveSession,
         speak,
         stopSpeaking,
         sendMessage,
