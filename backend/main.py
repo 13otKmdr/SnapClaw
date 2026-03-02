@@ -83,9 +83,16 @@ app = FastAPI(
 
 app.include_router(orchestration_router)
 
+ALLOWED_ORIGINS = [
+    origin.strip() for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:3000,http://localhost:8000,http://localhost:8081"
+    ).split(",") if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
