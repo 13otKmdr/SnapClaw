@@ -75,6 +75,9 @@ export const useVoice = (): VoiceContextType => {
 const generateSessionId = () => `session_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 const createMessageId = () => `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 const EXPO_FALLBACK_MAX_TURN_MS = 6500;
+const TTS_RATE = 0.92;
+const TTS_PITCH = 1.0;
+const PREFERRED_VOICE_HINTS = ['enhanced', 'premium', 'neural', 'natural', 'samantha', 'ava', 'victoria'];
 const RECORDING_OPTIONS: Audio.RecordingOptions = {
   isMeteringEnabled: true,
   ios: {
@@ -127,6 +130,8 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressAutoRestartRef = useRef(false);
+  const preferredVoiceIdRef = useRef<string | undefined>(undefined);
+  const voiceResolutionAttemptedRef = useRef(false);
 
   useEffect(() => {
     stateRef.current = state;
@@ -148,6 +153,44 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       ...prev,
       messages: [...prev.messages, message],
     }));
+  }, []);
+
+  const resolvePreferredVoice = useCallback(async (): Promise<string | undefined> => {
+    if (voiceResolutionAttemptedRef.current) {
+      return preferredVoiceIdRef.current;
+    }
+
+    voiceResolutionAttemptedRef.current = true;
+
+    try {
+      const voices = await Speech.getAvailableVoicesAsync?.();
+      if (!Array.isArray(voices) || voices.length === 0) {
+        return undefined;
+      }
+
+      const englishVoices = voices.filter((voice: any) => {
+        const language = String(voice?.language || '').toLowerCase();
+        return language.startsWith('en');
+      });
+
+      const candidates = englishVoices.length ? englishVoices : voices;
+      const scoreVoice = (voice: any) => {
+        const descriptor = `${voice?.name || ''} ${voice?.identifier || ''} ${voice?.quality || ''}`.toLowerCase();
+        let score = 0;
+        if (descriptor.includes('en-us')) score += 2;
+        for (const hint of PREFERRED_VOICE_HINTS) {
+          if (descriptor.includes(hint)) score += 3;
+        }
+        return score;
+      };
+
+      const sorted = [...candidates].sort((a: any, b: any) => scoreVoice(b) - scoreVoice(a));
+      const selected = sorted[0];
+      preferredVoiceIdRef.current = (selected?.identifier || selected?.id || undefined) as string | undefined;
+      return preferredVoiceIdRef.current;
+    } catch {
+      return undefined;
+    }
   }, []);
 
   const maybeRestartListeningAfterSpeech = useCallback(() => {
@@ -176,11 +219,13 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
 
     setState((prev) => ({ ...prev, isSpeaking: true }));
+    const preferredVoice = await resolvePreferredVoice();
 
     Speech.speak(text, {
       language: 'en-US',
-      rate: 1.0,
-      pitch: 1.0,
+      voice: preferredVoice,
+      rate: TTS_RATE,
+      pitch: TTS_PITCH,
       onDone: () => {
         setState((prev) => ({ ...prev, isSpeaking: false }));
         maybeRestartListeningAfterSpeech();
@@ -194,7 +239,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         maybeRestartListeningAfterSpeech();
       },
     });
-  }, [maybeRestartListeningAfterSpeech]);
+  }, [maybeRestartListeningAfterSpeech, resolvePreferredVoice]);
 
   const stopSpeaking = useCallback(() => {
     suppressAutoRestartRef.current = true;

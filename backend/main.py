@@ -52,6 +52,7 @@ LOCAL_WHISPER_ENABLED = os.environ.get("LOCAL_WHISPER_ENABLED", "true")
 LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "45"))
 SYSTEM_PROMPT = (
     "You are a concise voice assistant. Be practical and direct. "
+    "You are in a live voice conversation, so never claim you are text-only. "
     "If the user asks to run tasks, acknowledge and keep context crisp."
 )
 
@@ -232,12 +233,40 @@ async def process_voice_audio(
     intent = "CHAT"
     confidence = 0.9
 
+    transcript = ""
+    try:
+        transcript = await transcribe_audio_bytes(audio_bytes, filename)
+        if transcript:
+            entities["transcript"] = transcript
+    except RuntimeError as exc:
+        log.warning("STT unavailable in process-audio path: %s", exc)
+    except Exception:
+        log.exception("Unexpected STT error in process-audio path")
+
+    text = transcript.lower() if transcript else ""
+    if transcript and any(word in text for word in ["execute", "run", "agent zero", "task", "delegate"]):
+        intent = "COMMAND"
+        entities["action"] = "agent_execute"
+        requires_confirmation = True
+        action = {"type": "agent_execute", "status": "pending"}
+
+    if intent == "COMMAND":
+        response_text = generate_response(text, intent, entities)
+        return VoiceResponse(
+            text=response_text,
+            intent=intent,
+            confidence=confidence,
+            action=action,
+            requires_confirmation=requires_confirmation,
+            entities=entities,
+        )
+
     if OPENROUTER_API_KEY and _model_prefers_responses(OPENROUTER_MODEL):
         history = conversation_history.setdefault(session_id, [])
         history[:] = history[-12:]
         try:
             response_text = await _call_openrouter_responses_with_audio(history, audio_bytes, filename)
-            history.append({"role": "user", "content": "[Voice message]"})
+            history.append({"role": "user", "content": transcript or "[Voice message]"})
             history.append({"role": "assistant", "content": response_text})
             history[:] = history[-12:]
             return VoiceResponse(
@@ -263,25 +292,16 @@ async def process_voice_audio(
                 len(audio_bytes),
             )
 
-    try:
-        transcript = await transcribe_audio_bytes(audio_bytes, filename)
-    except RuntimeError as exc:
-        raise HTTPException(502, str(exc))
     if not transcript:
-        raise HTTPException(502, "Transcription failed: empty transcript")
+        try:
+            transcript = await transcribe_audio_bytes(audio_bytes, filename)
+        except RuntimeError as exc:
+            raise HTTPException(502, str(exc))
+        if not transcript:
+            raise HTTPException(502, "Transcription failed: empty transcript")
+        entities["transcript"] = transcript
 
-    entities["transcript"] = transcript
-    text = transcript.lower()
-    if any(word in text for word in ["execute", "run", "agent zero", "task", "delegate"]):
-        intent = "COMMAND"
-        entities["action"] = "agent_execute"
-        requires_confirmation = True
-        action = {"type": "agent_execute", "status": "pending"}
-
-    if intent == "CHAT":
-        response_text = await generate_llm_response(session_id, transcript)
-    else:
-        response_text = generate_response(text, intent, entities)
+    response_text = await generate_llm_response(session_id, transcript)
 
     return VoiceResponse(
         text=response_text,
