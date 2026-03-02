@@ -1,4 +1,16 @@
-# Voice-First AI Assistant Interface
+# SnapClaw
+
+## Positioning Statement
+
+SnapClaw is a voice-first orchestration layer that sits above OpenClaw / Agent Zero / model providers so users stay in fluid conversation while background tasks run.
+
+## Product Spec Header (North Star)
+
+- tap once to open live voice session
+- fluid back-and-forth turn-taking
+- background task orchestration + steering
+- parallel tasks + progress narration
+- safe confirmations for high-impact actions
 
 A hands-free, real-time voice interface with command capabilities for Telegram, Agent Zero, and OpenClaw.
 

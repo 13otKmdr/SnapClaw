@@ -130,8 +130,8 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
         {messages.length === 0 && !streamingText && (
           <View style={styles.empty}>
             <Ionicons name="mic-outline" size={56} color="#222" />
-            <Text style={styles.emptyTitle}>Hold to speak or type below</Text>
-            <Text style={styles.emptySub}>Agent Zero will respond in real-time</Text>
+            <Text style={styles.emptyTitle}>Tap once to start a live voice session</Text>
+            <Text style={styles.emptySub}>SnapClaw orchestrates agents while you keep talking</Text>
           </View>
         )}
 

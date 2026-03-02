@@ -46,16 +46,16 @@ export const VoiceButton: React.FC = () => {
 
   const getAccessibilityLabel = () => {
     if (isProcessing) return 'Voice Assistant processing';
-    if (isSpeaking) return 'Voice Assistant speaking';
-    if (isListening) return 'Voice Assistant listening';
-    return 'Voice Assistant idle';
+    if (isSpeaking) return 'Interrupt response';
+    if (isListening) return 'End live voice session';
+    return 'Start live voice session';
   };
 
   const getAccessibilityHint = () => {
     if (isProcessing) return 'Please wait for the process to complete';
-    if (isSpeaking) return 'Double tap to stop speaking';
-    if (isListening) return 'Double tap to stop listening';
-    return 'Double tap to start listening';
+    if (isSpeaking) return 'Double tap to interrupt response';
+    if (isListening) return 'Double tap to end live voice session';
+    return 'Double tap to start live voice session';
   };
 
   return (

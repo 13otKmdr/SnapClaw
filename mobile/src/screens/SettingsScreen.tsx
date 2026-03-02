@@ -140,8 +140,8 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>About</Text>
           <View style={styles.aboutItem}>
-            <Text style={styles.aboutText}>Voice Interface v1.0.0</Text>
-            <Text style={styles.aboutSubtext}>Real-time voice AI assistant</Text>
+            <Text style={styles.aboutText}>SnapClaw v1.0.0</Text>
+            <Text style={styles.aboutSubtext}>Voice-first orchestration layer above agents and model providers</Text>
           </View>
         </View>
 
