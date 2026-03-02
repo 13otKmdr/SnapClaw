@@ -70,7 +70,12 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
 
       {/* ── Header ── */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => { refreshChats(); setChatModalVisible(true); }} style={styles.chatBtn}>
+        <TouchableOpacity
+          onPress={() => { refreshChats(); setChatModalVisible(true); }}
+          style={styles.chatBtn}
+          accessibilityRole="button"
+          accessibilityHint="Double tap to open chat list"
+        >
           <Ionicons name="chatbubbles-outline" size={22} color="#7c7cff" />
           <Text style={styles.chatBtnLabel} numberOfLines={1}>
             {activeChat?.name ?? 'Chats'}
@@ -79,10 +84,22 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
         </TouchableOpacity>
 
         <View style={styles.headerRight}>
-          <TouchableOpacity onPress={clearMessages} style={styles.iconBtn}>
+          <TouchableOpacity
+            onPress={clearMessages}
+            style={styles.iconBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Clear messages"
+            accessibilityHint="Double tap to clear all messages in current chat"
+          >
             <Ionicons name="trash-outline" size={20} color="#555" />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.iconBtn}>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('Settings')}
+            style={styles.iconBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Settings"
+            accessibilityHint="Double tap to open settings"
+          >
             <Ionicons name="settings-outline" size={20} color="#555" />
           </TouchableOpacity>
         </View>
@@ -149,6 +166,9 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
             style={[styles.sendBtn, !textInput.trim() && styles.sendBtnOff]}
             onPress={handleSend}
             disabled={!textInput.trim() || isProcessing}
+            accessibilityRole="button"
+            accessibilityLabel="Send message"
+            accessibilityState={{ disabled: !textInput.trim() || isProcessing }}
           >
             <Ionicons name="send" size={18} color={textInput.trim() ? '#fff' : '#333'} />
           </TouchableOpacity>
