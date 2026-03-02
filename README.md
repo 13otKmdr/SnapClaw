@@ -233,6 +233,21 @@ For mobile clients, point transport to your backend:
 - `EXPO_PUBLIC_API_URL=http://<host>:8000`
 - `EXPO_PUBLIC_WS_URL=ws://<host>:8000`
 
+## Local Whisper Fallback
+
+`POST /api/voice/transcribe` uses Z.AI transcription when `ZAI_API_KEY` is set.  
+If `ZAI_API_KEY` is missing, the backend falls back to local `faster-whisper` on CPU by default.
+
+Environment variables:
+- `LOCAL_WHISPER_ENABLED` (default: `true`)
+- `LOCAL_WHISPER_MODEL` (default: `tiny.en`)
+- `LOCAL_WHISPER_DEVICE` (default: `cpu`)
+- `LOCAL_WHISPER_COMPUTE_TYPE` (default: `int8`)
+- `LOCAL_WHISPER_LANGUAGE` (default: `en`)
+- `LOCAL_WHISPER_BEAM_SIZE` (default: `1`)
+
+If local fallback is disabled (`LOCAL_WHISPER_ENABLED=false`) and `ZAI_API_KEY` is not configured, transcription returns a clear runtime error.
+
 ### Permission Config (permissions.yaml)
 
 ```yaml

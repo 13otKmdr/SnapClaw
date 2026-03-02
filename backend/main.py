@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import os
 import logging
+import asyncio
+import tempfile
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
 from mimetypes import guess_type
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -35,6 +39,12 @@ ZAI_API_KEY = os.environ.get("ZAI_API_KEY", "")
 ZAI_MODEL = os.environ.get("ZAI_MODEL", "glm-5")
 ZAI_ASR_MODEL = os.environ.get("ZAI_ASR_MODEL", "glm-asr-2512")
 ZAI_BASE_URL = os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4")
+LOCAL_WHISPER_MODEL = os.environ.get("LOCAL_WHISPER_MODEL", "tiny.en")
+LOCAL_WHISPER_DEVICE = os.environ.get("LOCAL_WHISPER_DEVICE", "cpu")
+LOCAL_WHISPER_COMPUTE_TYPE = os.environ.get("LOCAL_WHISPER_COMPUTE_TYPE", "int8")
+LOCAL_WHISPER_LANGUAGE = os.environ.get("LOCAL_WHISPER_LANGUAGE", "en")
+LOCAL_WHISPER_BEAM_SIZE = os.environ.get("LOCAL_WHISPER_BEAM_SIZE", "1")
+LOCAL_WHISPER_ENABLED = os.environ.get("LOCAL_WHISPER_ENABLED", "true")
 LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "45"))
 SYSTEM_PROMPT = (
     "You are a concise voice assistant. Be practical and direct. "
@@ -44,6 +54,8 @@ SYSTEM_PROMPT = (
 llm_client = httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS)
 conversation_history: Dict[str, List[Dict[str, str]]] = {}
 log = logging.getLogger(__name__)
+_local_whisper_model: Any = None
+_local_whisper_lock = threading.Lock()
 
 
 @asynccontextmanager
@@ -421,9 +433,113 @@ def _fallback_chat(user_text: str) -> str:
     return "I got it. Set OPENROUTER_API_KEY or ZAI_API_KEY for full model responses."
 
 
+def _env_truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _local_whisper_is_enabled() -> bool:
+    return _env_truthy(LOCAL_WHISPER_ENABLED)
+
+
+def _local_whisper_beam_size() -> int:
+    try:
+        beam = int(LOCAL_WHISPER_BEAM_SIZE)
+        return beam if beam > 0 else 1
+    except ValueError:
+        log.warning(
+            "Invalid LOCAL_WHISPER_BEAM_SIZE=%r; defaulting to 1",
+            LOCAL_WHISPER_BEAM_SIZE,
+        )
+        return 1
+
+
+def _get_local_whisper_model():
+    global _local_whisper_model
+    if _local_whisper_model is not None:
+        return _local_whisper_model
+
+    with _local_whisper_lock:
+        if _local_whisper_model is not None:
+            return _local_whisper_model
+
+        from faster_whisper import WhisperModel
+
+        log.info(
+            "Loading local Whisper model model=%s device=%s compute_type=%s",
+            LOCAL_WHISPER_MODEL,
+            LOCAL_WHISPER_DEVICE,
+            LOCAL_WHISPER_COMPUTE_TYPE,
+        )
+        _local_whisper_model = WhisperModel(
+            LOCAL_WHISPER_MODEL,
+            device=LOCAL_WHISPER_DEVICE,
+            compute_type=LOCAL_WHISPER_COMPUTE_TYPE,
+        )
+        log.info("Local Whisper model loaded successfully")
+        return _local_whisper_model
+
+
+def _transcribe_audio_local(audio_bytes: bytes, filename: str) -> str:
+    suffix = Path(filename).suffix or ".m4a"
+    temp_path = ""
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file.write(audio_bytes)
+            temp_path = temp_file.name
+
+        log.info(
+            "Starting local Whisper transcription filename=%s bytes=%s temp_path=%s language=%s beam_size=%s",
+            filename,
+            len(audio_bytes),
+            temp_path,
+            LOCAL_WHISPER_LANGUAGE,
+            _local_whisper_beam_size(),
+        )
+        model = _get_local_whisper_model()
+        segments, _ = model.transcribe(
+            temp_path,
+            language=LOCAL_WHISPER_LANGUAGE,
+            beam_size=_local_whisper_beam_size(),
+        )
+        transcript = " ".join(
+            segment.text.strip()
+            for segment in segments
+            if isinstance(segment.text, str) and segment.text.strip()
+        ).strip()
+
+        log.info(
+            "Local Whisper transcription completed filename=%s chars=%s",
+            filename,
+            len(transcript),
+        )
+        return transcript
+    except Exception as exc:
+        log.exception("Local Whisper transcription failed filename=%s", filename)
+        raise RuntimeError(f"Local Whisper transcription failed: {exc}")
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                log.warning("Failed to remove temporary audio file: %s", temp_path)
+
+
 async def transcribe_audio_bytes(audio_bytes: bytes, filename: str) -> str:
     if not ZAI_API_KEY:
-        raise RuntimeError("Transcription unavailable: ZAI_API_KEY is not configured")
+        if not _local_whisper_is_enabled():
+            log.error(
+                "Transcription unavailable: ZAI_API_KEY missing and LOCAL_WHISPER_ENABLED=%s",
+                LOCAL_WHISPER_ENABLED,
+            )
+            raise RuntimeError(
+                "Transcription unavailable: ZAI_API_KEY is not configured and local Whisper fallback is disabled"
+            )
+
+        log.info(
+            "Using local Whisper fallback for transcription because ZAI_API_KEY is not configured"
+        )
+        return await asyncio.to_thread(_transcribe_audio_local, audio_bytes, filename)
 
     content_type = guess_type(filename)[0] or "application/octet-stream"
     headers = {
