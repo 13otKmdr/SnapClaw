@@ -49,6 +49,13 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - DATABASE_URL=${DATABASE_URL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-z-ai/glm-5}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      - ZAI_API_KEY=${ZAI_API_KEY}
+      - ZAI_MODEL=${ZAI_MODEL:-glm-5}
+      - ZAI_ASR_MODEL=${ZAI_ASR_MODEL:-glm-asr-2512}
+      - ZAI_BASE_URL=${ZAI_BASE_URL:-https://api.z.ai/api/paas/v4}
       - OPENAI_REALTIME_MODEL=${OPENAI_REALTIME_MODEL:-gpt-4o-realtime-preview}
       - OPENAI_REALTIME_URL=${OPENAI_REALTIME_URL:-wss://api.openai.com/v1/realtime}
       - OPENAI_REALTIME_VOICE=${OPENAI_REALTIME_VOICE}
