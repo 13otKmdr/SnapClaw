@@ -233,6 +233,33 @@ For mobile clients, point transport to your backend:
 - `EXPO_PUBLIC_API_URL=http://<host>:8000`
 - `EXPO_PUBLIC_WS_URL=ws://<host>:8000`
 
+## OpenRouter Audio Models
+
+For audio-capable OpenRouter models (for example `openai/gpt-audio-mini`), use the audio route:
+- `POST /api/voice/process-audio` with multipart `file` + `session_id`
+- Backend tries OpenRouter Responses audio input first, then falls back to transcription + text generation
+- Text-only `POST /api/voice/process` remains available for keyboard/chat flows
+
+Recommended env for audio models:
+- `OPENROUTER_MODEL=openai/gpt-audio-mini`
+- `OPENROUTER_API_MODE=responses` (or `auto`)
+- `OPENROUTER_RESPONSES_MODALITIES=text`
+
+## Local Whisper Fallback
+
+`POST /api/voice/transcribe` uses Z.AI transcription when `ZAI_API_KEY` is set.  
+If `ZAI_API_KEY` is missing, the backend falls back to local `faster-whisper` on CPU by default.
+
+Environment variables:
+- `LOCAL_WHISPER_ENABLED` (default: `true`)
+- `LOCAL_WHISPER_MODEL` (default: `tiny.en`)
+- `LOCAL_WHISPER_DEVICE` (default: `cpu`)
+- `LOCAL_WHISPER_COMPUTE_TYPE` (default: `int8`)
+- `LOCAL_WHISPER_LANGUAGE` (default: `en`)
+- `LOCAL_WHISPER_BEAM_SIZE` (default: `1`)
+
+If local fallback is disabled (`LOCAL_WHISPER_ENABLED=false`) and `ZAI_API_KEY` is not configured, transcription returns a clear runtime error.
+
 ### Permission Config (permissions.yaml)
 
 ```yaml

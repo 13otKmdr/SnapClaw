@@ -37,7 +37,7 @@ services:
       # Agent Zero — points to the SnapClaw-managed agent-zero container on the
       # internal Docker network. Override with AGENT_ZERO_URL env var if you
       # want to point at an external instance instead.
-      - AGENT_ZERO_URL=${AGENT_ZERO_URL:-http://agent-zero:50001}
+      - AGENT_ZERO_URL=${AGENT_ZERO_URL:-http://agent-zero:80}
       - AGENT_ZERO_EXECUTOR=${AGENT_ZERO_EXECUTOR:-http}
       - AGENT_ZERO_TIMEOUT_SECONDS=${AGENT_ZERO_TIMEOUT_SECONDS:-30}
       - AGENT_ZERO_CREATE_PATH=${AGENT_ZERO_CREATE_PATH:-/api/task}
@@ -49,6 +49,13 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - DATABASE_URL=${DATABASE_URL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-z-ai/glm-5}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      - ZAI_API_KEY=${ZAI_API_KEY}
+      - ZAI_MODEL=${ZAI_MODEL:-glm-5}
+      - ZAI_ASR_MODEL=${ZAI_ASR_MODEL:-glm-asr-2512}
+      - ZAI_BASE_URL=${ZAI_BASE_URL:-https://api.z.ai/api/paas/v4}
       - OPENAI_REALTIME_MODEL=${OPENAI_REALTIME_MODEL:-gpt-4o-realtime-preview}
       - OPENAI_REALTIME_URL=${OPENAI_REALTIME_URL:-wss://api.openai.com/v1/realtime}
       - OPENAI_REALTIME_VOICE=${OPENAI_REALTIME_VOICE}
@@ -64,6 +71,7 @@ services:
       - ./logs:/app/logs
     ports:
       - "8000:8000"
+    command: ["uvicorn", "main:app", "--app-dir", "/app/backend", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
       - redis
       - agent-zero
@@ -97,7 +105,7 @@ services:
     container_name: snapclaw-agent-zero
     restart: unless-stopped
     ports:
-      - "50002:50001"
+      - "50002:80"
     volumes:
       - agent_zero_data:/a0
     environment:
@@ -105,7 +113,7 @@ services:
     networks:
       - voice-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:50001/health"]
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
       interval: 30s
       timeout: 10s
       retries: 5

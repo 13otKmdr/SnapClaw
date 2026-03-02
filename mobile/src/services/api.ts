@@ -79,6 +79,39 @@ export class ApiService {
     return typeof data?.text === 'string' ? data.text : '';
   }
 
+  static async processVoiceAudio(uri: string, sessionId: string): Promise<VoiceResponse> {
+    const token = await AuthService.getToken();
+    const extension = (uri.split('.').pop() || 'wav').toLowerCase();
+    const typeByExt: Record<string, string> = {
+      wav: 'audio/wav',
+      mp3: 'audio/mpeg',
+      m4a: 'audio/m4a',
+      mp4: 'audio/mp4',
+      webm: 'audio/webm',
+      ogg: 'audio/ogg',
+    };
+    const mimeType = typeByExt[extension] || 'application/octet-stream';
+    const formData = new FormData();
+    formData.append('file', {
+      uri,
+      name: `voice-input.${extension}`,
+      type: mimeType,
+    } as any);
+    formData.append('session_id', sessionId);
+
+    const response = await fetch(`${API_URL}/api/voice/process-audio`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      throw new Error('Voice audio processing failed');
+    }
+
+    return response.json();
+  }
+
   static async confirmAction(actionType: string, params: Record<string, any>, confirmed: boolean): Promise<any> {
     const response = await fetch(`${API_URL}/api/voice/confirm?action_type=${actionType}&confirmed=${confirmed}`, {
       method: 'POST',

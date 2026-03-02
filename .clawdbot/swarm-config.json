@@ -1,0 +1,9 @@
+{
+  "defaultTestCommand": "python -m compileall backend",
+  "testTimeoutSeconds": 900,
+  "notify": {
+    "enabled": true,
+    "mode": "now",
+    "onlyOnTransitions": true
+  }
+}
