@@ -371,7 +371,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             ...prev,
             isListening: false,
             isProcessing: true,
-            transcript: 'Transcribing...',
+            transcript: 'Processing voice...',
           }));
 
           if (!uri) {
@@ -385,24 +385,28 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             return;
           }
 
-          const transcribedText = await ApiService.transcribeAudio(uri);
-          const trimmed = transcribedText.trim();
-          if (!trimmed) {
-            appendMessage({
-              id: createMessageId(),
-              type: 'system',
-              text: 'I could not detect speech. Try again.',
-              timestamp: new Date(),
-            });
-            setState((prev) => ({ ...prev, isProcessing: false, transcript: '' }));
-            return;
-          }
-
+          const response = await ApiService.processVoiceAudio(uri, state.sessionId);
+          const transcript = typeof response.entities?.transcript === 'string'
+            ? response.entities.transcript.trim()
+            : '';
+          const userText = transcript || '[Voice message]';
+          appendMessage({
+            id: createMessageId(),
+            type: 'user',
+            text: userText,
+            timestamp: new Date(),
+          });
           setState((prev) => ({ ...prev, transcript: '' }));
 
-          // Route through sendMessage so WebSocket is used when connected,
-          // with automatic fallback to REST when offline.
-          await sendMessage(trimmed);
+          handleAssistantText(response.text || 'No response text returned.');
+
+          if (response.requires_confirmation) {
+            setState((prev) => ({
+              ...prev,
+              requiresConfirmation: true,
+              confirmationPrompt: 'Do you want me to continue?',
+            }));
+          }
         } catch {
           appendMessage({
             id: createMessageId(),
@@ -417,7 +421,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
 
     setState((prev) => ({ ...prev, isListening: false }));
-  }, [appendMessage, sendMessage]);
+  }, [appendMessage, handleAssistantText, state.sessionId]);
 
   const startListening = useCallback(async () => {
     try {

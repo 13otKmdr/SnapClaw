@@ -235,7 +235,12 @@ For mobile clients, point transport to your backend:
 
 ## OpenRouter Audio Models
 
-For audio-capable OpenRouter models on `POST /api/voice/process`, use:
+For audio-capable OpenRouter models (for example `openai/gpt-audio-mini`), use the audio route:
+- `POST /api/voice/process-audio` with multipart `file` + `session_id`
+- Backend tries OpenRouter Responses audio input first, then falls back to transcription + text generation
+- Text-only `POST /api/voice/process` remains available for keyboard/chat flows
+
+Recommended env for audio models:
 - `OPENROUTER_MODEL=openai/gpt-audio-mini`
 - `OPENROUTER_API_MODE=responses` (or `auto`)
 - `OPENROUTER_RESPONSES_MODALITIES=text`

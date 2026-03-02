@@ -6,6 +6,7 @@ import logging
 import asyncio
 import tempfile
 import threading
+import base64
 from contextlib import asynccontextmanager
 from datetime import datetime
 from mimetypes import guess_type
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -201,6 +202,84 @@ async def process_voice(
 
     if intent == "CHAT":
         response_text = await generate_llm_response(request.session_id, request.text)
+    else:
+        response_text = generate_response(text, intent, entities)
+
+    return VoiceResponse(
+        text=response_text,
+        intent=intent,
+        confidence=confidence,
+        action=action,
+        requires_confirmation=requires_confirmation,
+        entities=entities,
+    )
+
+
+@app.post("/api/voice/process-audio", response_model=VoiceResponse, tags=["Voice"])
+async def process_voice_audio(
+    file: UploadFile = File(...),
+    session_id: str = Form(...),
+    user: Optional[Dict[str, Any]] = Depends(get_api_key_user),
+):
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(400, "Uploaded audio file is empty")
+
+    filename = file.filename or "audio.m4a"
+    entities: Dict[str, Any] = {}
+    action = None
+    requires_confirmation = False
+    intent = "CHAT"
+    confidence = 0.9
+
+    if OPENROUTER_API_KEY and _model_prefers_responses(OPENROUTER_MODEL):
+        history = conversation_history.setdefault(session_id, [])
+        history[:] = history[-12:]
+        try:
+            response_text = await _call_openrouter_responses_with_audio(history, audio_bytes, filename)
+            history.append({"role": "user", "content": "[Voice message]"})
+            history.append({"role": "assistant", "content": response_text})
+            history[:] = history[-12:]
+            return VoiceResponse(
+                text=response_text,
+                intent=intent,
+                confidence=confidence,
+                action=action,
+                requires_confirmation=requires_confirmation,
+                entities=entities,
+            )
+        except OpenRouterCallError as exc:
+            log.warning(
+                "OpenRouter audio responses failed; falling back to STT+text status=%s detail=%s filename=%s bytes=%s",
+                exc.status_code,
+                exc.user_message,
+                filename,
+                len(audio_bytes),
+            )
+        except Exception:
+            log.exception(
+                "Unexpected error in OpenRouter audio responses; falling back to STT+text filename=%s bytes=%s",
+                filename,
+                len(audio_bytes),
+            )
+
+    try:
+        transcript = await transcribe_audio_bytes(audio_bytes, filename)
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    if not transcript:
+        raise HTTPException(502, "Transcription failed: empty transcript")
+
+    entities["transcript"] = transcript
+    text = transcript.lower()
+    if any(word in text for word in ["execute", "run", "agent zero", "task", "delegate"]):
+        intent = "COMMAND"
+        entities["action"] = "agent_execute"
+        requires_confirmation = True
+        action = {"type": "agent_execute", "status": "pending"}
+
+    if intent == "CHAT":
+        response_text = await generate_llm_response(session_id, transcript)
     else:
         response_text = generate_response(text, intent, entities)
 
@@ -428,6 +507,57 @@ async def _call_openrouter_responses(history: List[Dict[str, str]]) -> str:
         raise OpenRouterCallError(f"OpenRouter request failed: {exc}") from exc
 
 
+async def _call_openrouter_responses_with_audio(
+    history: List[Dict[str, str]],
+    audio_bytes: bytes,
+    filename: str,
+) -> str:
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    encoded_audio = base64.b64encode(audio_bytes).decode("ascii")
+    audio_format = _infer_audio_format(filename)
+    input_turns = [_history_turn_to_input_text("system", SYSTEM_PROMPT)]
+    input_turns.extend(_history_turn_to_input_text(turn.get("role", ""), turn.get("content", "")) for turn in history)
+    input_turns.append(
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": encoded_audio,
+                        "format": audio_format,
+                    },
+                }
+            ],
+        }
+    )
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "input": input_turns,
+        "modalities": _parse_openrouter_modalities(),
+    }
+    try:
+        response = await llm_client.post(
+            f"{OPENROUTER_BASE_URL}/responses",
+            headers=headers,
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return _extract_responses_content(data) or "I received that. What should I do next?"
+    except httpx.HTTPStatusError as exc:
+        detail = _safe_error_detail(exc.response)
+        raise OpenRouterCallError(
+            f"OpenRouter request failed ({exc.response.status_code}). {detail}".strip(),
+            status_code=exc.response.status_code,
+        ) from exc
+    except Exception as exc:
+        raise OpenRouterCallError(f"OpenRouter request failed: {exc}") from exc
+
+
 async def _call_zai(history: List[Dict[str, str]]) -> str:
     headers = {
         "Authorization": f"Bearer {ZAI_API_KEY}",
@@ -496,6 +626,28 @@ def _extract_responses_content(data: Dict[str, Any]) -> str:
                     if isinstance(nested, str) and nested.strip():
                         texts.append(nested.strip())
     return "\n".join(texts).strip()
+
+
+def _history_turn_to_input_text(role: str, content: str) -> Dict[str, Any]:
+    normalized_role = role if role in {"system", "user", "assistant"} else "user"
+    text = content if isinstance(content, str) else str(content)
+    return {
+        "role": normalized_role,
+        "content": [{"type": "input_text", "text": text}],
+    }
+
+
+def _infer_audio_format(filename: str) -> str:
+    suffix = Path(filename).suffix.lower().lstrip(".")
+    by_suffix = {
+        "wav": "wav",
+        "mp3": "mp3",
+        "m4a": "m4a",
+        "mp4": "mp4",
+        "webm": "webm",
+        "ogg": "ogg",
+    }
+    return by_suffix.get(suffix, "wav")
 
 
 def _model_prefers_responses(model_name: str) -> bool:
