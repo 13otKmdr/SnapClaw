@@ -109,7 +109,12 @@ export const ChatListModal: React.FC<ChatListModalProps> = ({
               onSubmitEditing={handleCreate}
               returnKeyType="done"
             />
-            <TouchableOpacity style={styles.createBtn} onPress={handleCreate}>
+            <TouchableOpacity
+              style={styles.createBtn}
+              onPress={handleCreate}
+              accessibilityRole="button"
+              accessibilityLabel="Create new chat"
+            >
               <Ionicons name="add" size={22} color="#fff" />
             </TouchableOpacity>
           </View>

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
@@ -87,7 +88,16 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
 
         <View style={styles.headerRight}>
           <TouchableOpacity
-            onPress={clearMessages}
+            onPress={() => {
+              Alert.alert(
+                'Clear Messages',
+                'Are you sure you want to clear all messages in this chat?',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Clear', style: 'destructive', onPress: clearMessages }
+                ]
+              );
+            }}
             style={styles.iconBtn}
             accessibilityRole="button"
             accessibilityLabel="Clear messages"
