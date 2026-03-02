@@ -35,6 +35,8 @@ from orchestration.routes import router as orchestration_router
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "z-ai/glm-5")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_API_MODE = os.environ.get("OPENROUTER_API_MODE", "auto").strip().lower()
+OPENROUTER_RESPONSES_MODALITIES = os.environ.get("OPENROUTER_RESPONSES_MODALITIES", "text")
 ZAI_API_KEY = os.environ.get("ZAI_API_KEY", "")
 ZAI_MODEL = os.environ.get("ZAI_MODEL", "glm-5")
 ZAI_ASR_MODEL = os.environ.get("ZAI_ASR_MODEL", "glm-asr-2512")
@@ -345,6 +347,31 @@ async def generate_llm_response(session_id: str, user_text: str) -> str:
 
 
 async def _call_openrouter(history: List[Dict[str, str]]) -> str:
+    if OPENROUTER_API_MODE == "chat":
+        methods = [_call_openrouter_chat, _call_openrouter_responses]
+    elif OPENROUTER_API_MODE == "responses":
+        methods = [_call_openrouter_responses, _call_openrouter_chat]
+    else:
+        prefers_responses = _model_prefers_responses(OPENROUTER_MODEL)
+        methods = (
+            [_call_openrouter_responses, _call_openrouter_chat]
+            if prefers_responses
+            else [_call_openrouter_chat, _call_openrouter_responses]
+        )
+
+    first_method, second_method = methods
+    try:
+        return await first_method(history)
+    except OpenRouterCallError as first_error:
+        if first_error.status_code in {400, 404, 422}:
+            try:
+                return await second_method(history)
+            except OpenRouterCallError as second_error:
+                return second_error.user_message
+        return first_error.user_message
+
+
+async def _call_openrouter_chat(history: List[Dict[str, str]]) -> str:
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -364,9 +391,41 @@ async def _call_openrouter(history: List[Dict[str, str]]) -> str:
         return _extract_chat_content(data) or "I received that. What should I do next?"
     except httpx.HTTPStatusError as exc:
         detail = _safe_error_detail(exc.response)
-        return f"OpenRouter request failed ({exc.response.status_code}). {detail}".strip()
+        raise OpenRouterCallError(
+            f"OpenRouter request failed ({exc.response.status_code}). {detail}".strip(),
+            status_code=exc.response.status_code,
+        ) from exc
     except Exception as exc:
-        return f"OpenRouter request failed: {exc}"
+        raise OpenRouterCallError(f"OpenRouter request failed: {exc}") from exc
+
+
+async def _call_openrouter_responses(history: List[Dict[str, str]]) -> str:
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "input": [{"role": "system", "content": SYSTEM_PROMPT}] + history,
+        "modalities": _parse_openrouter_modalities(),
+    }
+    try:
+        response = await llm_client.post(
+            f"{OPENROUTER_BASE_URL}/responses",
+            headers=headers,
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return _extract_responses_content(data) or "I received that. What should I do next?"
+    except httpx.HTTPStatusError as exc:
+        detail = _safe_error_detail(exc.response)
+        raise OpenRouterCallError(
+            f"OpenRouter request failed ({exc.response.status_code}). {detail}".strip(),
+            status_code=exc.response.status_code,
+        ) from exc
+    except Exception as exc:
+        raise OpenRouterCallError(f"OpenRouter request failed: {exc}") from exc
 
 
 async def _call_zai(history: List[Dict[str, str]]) -> str:
@@ -407,6 +466,54 @@ def _extract_chat_content(data: Dict[str, Any]) -> str:
         texts = [part.get("text", "") for part in content if isinstance(part, dict)]
         return "\n".join(t for t in texts if t).strip()
     return ""
+
+
+def _extract_responses_content(data: Dict[str, Any]) -> str:
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    output = data.get("output")
+    if not isinstance(output, list):
+        return ""
+
+    texts: List[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            for key in ("output_text", "text"):
+                value = part.get(key)
+                if isinstance(value, str) and value.strip():
+                    texts.append(value.strip())
+                elif isinstance(value, dict):
+                    nested = value.get("value")
+                    if isinstance(nested, str) and nested.strip():
+                        texts.append(nested.strip())
+    return "\n".join(texts).strip()
+
+
+def _model_prefers_responses(model_name: str) -> bool:
+    name = model_name.lower()
+    return "audio" in name or "realtime" in name
+
+
+def _parse_openrouter_modalities() -> List[str]:
+    modalities = [value.strip().lower() for value in OPENROUTER_RESPONSES_MODALITIES.split(",")]
+    cleaned = [value for value in modalities if value]
+    return cleaned or ["text"]
+
+
+class OpenRouterCallError(Exception):
+    def __init__(self, user_message: str, status_code: Optional[int] = None):
+        super().__init__(user_message)
+        self.user_message = user_message
+        self.status_code = status_code
 
 
 def _safe_error_detail(response: httpx.Response) -> str:

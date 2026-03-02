@@ -233,6 +233,13 @@ For mobile clients, point transport to your backend:
 - `EXPO_PUBLIC_API_URL=http://<host>:8000`
 - `EXPO_PUBLIC_WS_URL=ws://<host>:8000`
 
+## OpenRouter Audio Models
+
+For audio-capable OpenRouter models on `POST /api/voice/process`, use:
+- `OPENROUTER_MODEL=openai/gpt-audio-mini`
+- `OPENROUTER_API_MODE=responses` (or `auto`)
+- `OPENROUTER_RESPONSES_MODALITIES=text`
+
 ## Local Whisper Fallback
 
 `POST /api/voice/transcribe` uses Z.AI transcription when `ZAI_API_KEY` is set.  
