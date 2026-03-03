@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import os
 from typing import Any, Dict, Optional, Set, Tuple
 from urllib.parse import urlencode
@@ -14,6 +15,24 @@ from fastapi import WebSocket, WebSocketDisconnect
 from .dependencies import get_task_manager, get_tool_router
 from .models import TaskEventResponse, TaskStatus
 from .tools import build_realtime_tool_specs
+
+log = logging.getLogger(__name__)
+
+
+def _env_bool(name: str, default: str = "true") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+_LOG_ALL_EVENTS = _env_bool("REALTIME_PROXY_LOG_ALL_EVENTS", "true")
+_LOG_PAYLOAD_MAX_CHARS = max(_env_int("REALTIME_PROXY_LOG_MAX_CHARS", 1200), 200)
 
 
 # Terminal task statuses that warrant a voice notification back through GPT-4o.
@@ -139,6 +158,53 @@ def _extract_function_call(event: Dict[str, Any]) -> Optional[Tuple[str, str, An
     return None
 
 
+def _truncate_for_log(text: str, limit: int = _LOG_PAYLOAD_MAX_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...(truncated {len(text) - limit} chars)"
+
+
+def _frame_type(raw_text: str) -> str:
+    try:
+        event = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return "non_json"
+
+    if isinstance(event, dict):
+        event_type = event.get("type")
+        return str(event_type) if event_type else "json_without_type"
+    return f"json_{type(event).__name__}"
+
+
+def _log_frame(direction: str, raw_text: str) -> None:
+    if not _LOG_ALL_EVENTS:
+        return
+    event_type = _frame_type(raw_text)
+    log.info(
+        "realtime_proxy frame direction=%s event_type=%s size=%s payload=%s",
+        direction,
+        event_type,
+        len(raw_text),
+        _truncate_for_log(raw_text),
+    )
+
+
+def _log_bytes_frame(direction: str, payload: bytes) -> None:
+    if not _LOG_ALL_EVENTS:
+        return
+    log.info(
+        "realtime_proxy frame direction=%s event_type=binary size=%s",
+        direction,
+        len(payload),
+    )
+
+
+async def _send_upstream_json(upstream: Any, payload: Dict[str, Any], *, direction: str = "proxy->upstream") -> None:
+    raw_text = json.dumps(payload)
+    _log_frame(direction, raw_text)
+    await upstream.send(raw_text)
+
+
 async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> None:
     """Bridge client WebSocket <-> upstream realtime provider and execute tool calls."""
 
@@ -170,6 +236,12 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
     response_active = asyncio.Event()
 
     try:
+        log.info(
+            "realtime_proxy connect conversation_id=%s provider=%s upstream_url=%s",
+            conversation_id,
+            provider,
+            upstream_url,
+        )
         connect_kwargs: Dict[str, Any] = {
             "ping_interval": 20,
             "ping_timeout": 20,
@@ -183,7 +255,7 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
             connect_kwargs["extra_headers"] = upstream_headers
 
         async with websockets.connect(upstream_url, **connect_kwargs) as upstream:
-            await upstream.send(json.dumps(_build_session_update(conversation_id, provider)))
+            await _send_upstream_json(upstream, _build_session_update(conversation_id, provider))
 
             completed_tool_calls: Set[str] = set()
 
@@ -225,8 +297,10 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
                     raise exc
 
     except WebSocketDisconnect:
+        log.info("realtime_proxy client disconnected conversation_id=%s", conversation_id)
         return
     except Exception as exc:
+        log.exception("realtime_proxy failed conversation_id=%s error=%s", conversation_id, exc)
         await _safe_send_json(websocket, {"type": "proxy.error", "error": str(exc)})
     finally:
         await task_manager.unsubscribe(conversation_id, task_event_queue)
@@ -235,6 +309,7 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
                 await websocket.close()
             except RuntimeError:
                 pass
+        log.info("realtime_proxy closed conversation_id=%s", conversation_id)
 
 
 async def _client_to_upstream(websocket: WebSocket, upstream: Any) -> None:
@@ -247,12 +322,20 @@ async def _client_to_upstream(websocket: WebSocket, upstream: Any) -> None:
 
         text = message.get("text")
         if text is not None:
+            _log_frame("client->upstream", text)
             await upstream.send(text)
             continue
 
         data = message.get("bytes")
         if data is not None:
-            await upstream.send(data.decode("utf-8"))
+            try:
+                decoded = data.decode("utf-8")
+            except UnicodeDecodeError:
+                _log_bytes_frame("client->upstream", data)
+                await upstream.send(data)
+            else:
+                _log_frame("client->upstream", decoded)
+                await upstream.send(decoded)
 
 
 async def _upstream_to_client(
@@ -270,10 +353,16 @@ async def _upstream_to_client(
         raw = await upstream.recv()
 
         if isinstance(raw, bytes):
-            raw_text = raw.decode("utf-8")
+            try:
+                raw_text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                _log_bytes_frame("upstream->client", raw)
+                await websocket.send_bytes(raw)
+                continue
         else:
             raw_text = raw
 
+        _log_frame("upstream->client", raw_text)
         await websocket.send_text(raw_text)
 
         try:
@@ -338,8 +427,8 @@ async def _upstream_to_client(
             },
         }
 
-        await upstream.send(json.dumps(output_event))
-        await upstream.send(json.dumps({"type": "response.create"}))
+        await _send_upstream_json(upstream, output_event)
+        await _send_upstream_json(upstream, {"type": "response.create"})
 
         await _safe_send_json(
             websocket,
@@ -413,8 +502,8 @@ async def _task_events_to_client(
                     "content": [{"type": "input_text", "text": notification_text}],
                 },
             }
-            await upstream.send(json.dumps(inject_event))
-            await upstream.send(json.dumps({"type": "response.create"}))
+            await _send_upstream_json(upstream, inject_event)
+            await _send_upstream_json(upstream, {"type": "response.create"})
         except Exception:
             # If the upstream is closed, silently skip — the mobile already
             # received the task_update event above.
@@ -423,6 +512,8 @@ async def _task_events_to_client(
 
 async def _safe_send_json(websocket: WebSocket, payload: Dict[str, Any]) -> None:
     try:
+        if _LOG_ALL_EVENTS:
+            _log_frame("proxy->client", json.dumps(payload))
         await websocket.send_json(payload)
     except (RuntimeError, WebSocketDisconnect):
         return
