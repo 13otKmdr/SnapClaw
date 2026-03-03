@@ -356,6 +356,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const webAudioContextRef = useRef<any>(null);
   const webAudioSourceRef = useRef<any>(null);
   const webAudioUnlockHandlerRef = useRef<(() => void) | null>(null);
+  const pendingVoiceMessageIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     stateRef.current = state;
@@ -1007,18 +1008,22 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     const onInputTranscript = (data: { text: string }) => {
-      if (data?.text && isMounted) {
-        setState((prev) => {
-          const msgs = [...prev.messages];
-          for (let i = msgs.length - 1; i >= 0; i--) {
-            if (msgs[i].type === 'user' && msgs[i].text === '[Voice message]') {
-              msgs[i] = { ...msgs[i], text: data.text };
-              break;
-            }
-          }
-          return { ...prev, messages: msgs, transcript: '' };
-        });
+      const transcriptText = typeof data?.text === 'string' ? data.text.trim() : '';
+      const pendingVoiceMessageId = pendingVoiceMessageIdRef.current;
+      if (!transcriptText || !pendingVoiceMessageId || !isMounted) {
+        return;
       }
+
+      setState((prev) => {
+        const messageIndex = prev.messages.findIndex((message) => message.id === pendingVoiceMessageId);
+        if (messageIndex < 0) {
+          return { ...prev, transcript: '' };
+        }
+        const messages = [...prev.messages];
+        messages[messageIndex] = { ...messages[messageIndex], text: transcriptText };
+        return { ...prev, messages, transcript: '' };
+      });
+      pendingVoiceMessageIdRef.current = null;
     };
 
     const onTaskUpdate = (event: any) => {
@@ -1304,8 +1309,10 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             const pcm16Base64 = stripWavHeader(base64Audio);
 
             // Add a placeholder user message (will be updated by input_transcript)
+            const pendingVoiceMessageId = createMessageId();
+            pendingVoiceMessageIdRef.current = pendingVoiceMessageId;
             appendMessage({
-              id: createMessageId(),
+              id: pendingVoiceMessageId,
               type: 'user',
               text: '[Voice message]',
               timestamp: new Date(),
@@ -1321,8 +1328,10 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           if (Platform.OS === 'web' && websocket.isConnected()) {
             try {
               const pcm16Base64 = await convertWebRecordingToPcm16Base64(uri);
+              const pendingVoiceMessageId = createMessageId();
+              pendingVoiceMessageIdRef.current = pendingVoiceMessageId;
               appendMessage({
-                id: createMessageId(),
+                id: pendingVoiceMessageId,
                 type: 'user',
                 text: '[Voice message]',
                 timestamp: new Date(),
@@ -1698,6 +1707,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     stopSpeaking();
     stopListening(false);
     websocket.disconnect();
+    pendingVoiceMessageIdRef.current = null;
     wsReconnectAttemptsRef.current = 0;
     clearWsReconnectTimer();
     setState((prev) => ({
@@ -1722,6 +1732,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       timestamp: new Date(message.created_at || Date.now()),
     }));
 
+    pendingVoiceMessageIdRef.current = null;
     setState((prev) => ({
       ...prev,
       messages: mapped,
@@ -1733,6 +1744,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const clearMessages = useCallback(() => {
+    pendingVoiceMessageIdRef.current = null;
     setState((prev) => ({
       ...prev,
       messages: [],
