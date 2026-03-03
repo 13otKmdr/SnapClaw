@@ -122,7 +122,7 @@ def _build_session_update(conversation_id: str, provider: str) -> Dict[str, Any]
         session["voice"] = voice
 
     if os.environ.get("REALTIME_ENABLE_SERVER_VAD", "true").lower() in {"1", "true", "yes"}:
-        session["turn_detection"] = {"type": "server_vad"}
+        session["turn_detection"] = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 800}
 
     return {"type": "session.update", "session": session}
 

@@ -1,4 +1,9 @@
 import { getApiBaseUrl, getWebSocketBaseUrl } from './baseUrl';
+import {
+  extractTranscriptFromRealtimePayload,
+  extractUserAudioTranscriptFromItem,
+  isInputAudioTranscriptEvent,
+} from './realtimeEventUtils';
 
 const API_URL = getApiBaseUrl();
 const WS_BASE_URL = getWebSocketBaseUrl();
@@ -70,8 +75,14 @@ class WebSocketService {
       const onMessage = (event: MessageEvent) => {
         const data = this.parseMessage(event.data);
         if (!data) {
+          console.debug('[Realtime WS] non-JSON message received', event.data);
           return;
         }
+
+        console.debug('[Realtime WS] received event', {
+          type: data?.type,
+          payload: data,
+        });
 
         if (this.hasListeners('event')) {
           this.emit('event', data);
@@ -261,7 +272,7 @@ class WebSocketService {
       payload.type === 'response.audio_transcript.done' ||
       payload.type === 'response.output_audio_transcript.done'
     ) {
-      const transcript = payload.transcript;
+      const transcript = extractTranscriptFromRealtimePayload(payload);
       if (typeof transcript === 'string' && transcript.trim()) {
         this.emit('audio_transcript', { text: transcript.trim() });
       }
@@ -269,12 +280,21 @@ class WebSocketService {
     }
 
     // Transcript of the user's audio input (what OpenAI heard)
-    if (payload.type === 'conversation.item.input_audio_transcription.completed') {
-      const transcript = payload.transcript;
+    if (isInputAudioTranscriptEvent(payload.type)) {
+      const transcript = extractTranscriptFromRealtimePayload(payload);
       if (typeof transcript === 'string' && transcript.trim()) {
         this.emit('input_transcript', { text: transcript.trim() });
       }
       return;
+    }
+
+    // Some providers surface user audio transcript on the message item itself.
+    if (payload.type === 'conversation.item.created') {
+      const transcript = extractUserAudioTranscriptFromItem(payload.item);
+      if (transcript) {
+        this.emit('input_transcript', { text: transcript });
+        return;
+      }
     }
 
     if (payload.type === 'response.done') {

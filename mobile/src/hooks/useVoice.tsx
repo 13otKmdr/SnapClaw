@@ -6,6 +6,7 @@ import * as Speech from 'expo-speech';
 
 import { ApiService } from '../services/api';
 import websocket from '../services/websocket';
+import { applyInputTranscriptToMessages, VOICE_MESSAGE_PLACEHOLDER } from './voiceTranscriptUtils';
 
 type SpeechRecognitionModule = {
   startRecognizing: (locale: string) => void;
@@ -1010,20 +1011,39 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const onInputTranscript = (data: { text: string }) => {
       const transcriptText = typeof data?.text === 'string' ? data.text.trim() : '';
       const pendingVoiceMessageId = pendingVoiceMessageIdRef.current;
-      if (!transcriptText || !pendingVoiceMessageId || !isMounted) {
+      console.debug('[Voice] input_transcript callback', {
+        transcriptText,
+        pendingVoiceMessageId,
+        raw: data,
+      });
+
+      if (!transcriptText || !isMounted) {
+        console.debug('[Voice] input_transcript ignored', {
+          reason: !transcriptText ? 'empty_transcript' : 'unmounted',
+        });
         return;
       }
 
       setState((prev) => {
-        const messageIndex = prev.messages.findIndex((message) => message.id === pendingVoiceMessageId);
-        if (messageIndex < 0) {
-          return { ...prev, transcript: '' };
-        }
-        const messages = [...prev.messages];
-        messages[messageIndex] = { ...messages[messageIndex], text: transcriptText };
-        return { ...prev, messages, transcript: '' };
+        const result = applyInputTranscriptToMessages(
+          prev.messages,
+          transcriptText,
+          pendingVoiceMessageId,
+          (text) => ({
+            id: createMessageId(),
+            type: 'user',
+            text,
+            timestamp: new Date(),
+          }),
+        );
+
+        console.debug('[Voice] input_transcript applied', {
+          strategy: result.strategy,
+          appliedMessageId: result.appliedMessageId,
+        });
+        pendingVoiceMessageIdRef.current = null;
+        return { ...prev, messages: result.messages, transcript: '' };
       });
-      pendingVoiceMessageIdRef.current = null;
     };
 
     const onTaskUpdate = (event: any) => {
@@ -1314,7 +1334,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             appendMessage({
               id: pendingVoiceMessageId,
               type: 'user',
-              text: '[Voice message]',
+              text: VOICE_MESSAGE_PLACEHOLDER,
               timestamp: new Date(),
             });
             setState((prev) => ({ ...prev, transcript: '' }));
@@ -1333,7 +1353,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               appendMessage({
                 id: pendingVoiceMessageId,
                 type: 'user',
-                text: '[Voice message]',
+                text: VOICE_MESSAGE_PLACEHOLDER,
                 timestamp: new Date(),
               });
               setState((prev) => ({ ...prev, transcript: '' }));
@@ -1363,7 +1383,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           const transcript = typeof response.entities?.transcript === 'string'
             ? response.entities.transcript.trim()
             : '';
-          const userText = transcript || '[Voice message]';
+          const userText = transcript || VOICE_MESSAGE_PLACEHOLDER;
           appendMessage({
             id: createMessageId(),
             type: 'user',
