@@ -1,7 +1,9 @@
 // API Service with Authentication
+import { Platform } from 'react-native';
 import { AuthService } from './authService';
+import { getApiBaseUrl } from './baseUrl';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://100.89.247.64:8000';
+const API_URL = getApiBaseUrl();
 
 export interface VoiceResponse {
   text: string;
@@ -104,11 +106,35 @@ export class ApiService {
     };
     const mimeType = typeByExt[extension] || 'application/octet-stream';
     const formData = new FormData();
-    formData.append('file', {
-      uri,
-      name: `voice-input.${extension}`,
-      type: mimeType,
-    } as any);
+
+    if (Platform.OS === 'web') {
+      try {
+        const blobResponse = await fetch(uri);
+        const blob = await blobResponse.blob();
+        const blobType = (blob.type || '').toLowerCase();
+        const uploadExt =
+          blobType.includes('webm') ? 'webm'
+          : blobType.includes('mpeg') ? 'mp3'
+          : blobType.includes('ogg') ? 'ogg'
+          : blobType.includes('wav') ? 'wav'
+          : extension;
+        (formData as any).append('file', blob, `voice-input.${uploadExt}`);
+      } catch {
+        // Fallback to React Native-style file descriptor if blob fetch fails.
+        formData.append('file', {
+          uri,
+          name: `voice-input.${extension}`,
+          type: mimeType,
+        } as any);
+      }
+    } else {
+      formData.append('file', {
+        uri,
+        name: `voice-input.${extension}`,
+        type: mimeType,
+      } as any);
+    }
+
     formData.append('session_id', sessionId);
 
     const response = await fetch(`${API_URL}/api/voice/process-audio`, {

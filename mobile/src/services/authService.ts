@@ -1,7 +1,8 @@
 // Authentication Service
 import * as SecureStore from 'expo-secure-store';
+import { getApiBaseUrl } from './baseUrl';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://100.89.247.64:8000';
+const API_URL = getApiBaseUrl();
 
 export interface User {
   id: string;

@@ -1,26 +1,12 @@
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://100.89.247.64:8000';
-const RAW_WS_BASE_URL = process.env.EXPO_PUBLIC_WS_URL || API_URL;
+import { getApiBaseUrl, getWebSocketBaseUrl } from './baseUrl';
+
+const API_URL = getApiBaseUrl();
+const WS_BASE_URL = getWebSocketBaseUrl();
 const REALTIME_ENABLED = ['1', 'true', 'yes'].includes(
   (process.env.EXPO_PUBLIC_REALTIME_ENABLED || 'true').toLowerCase(),
 );
 
 const normalizeBaseUrl = (value: string): string => value.replace(/\/$/, '');
-
-const buildWebSocketBaseUrl = (): string => {
-  const base = normalizeBaseUrl(RAW_WS_BASE_URL);
-  if (base.startsWith('wss://') || base.startsWith('ws://')) {
-    return base;
-  }
-  if (base.startsWith('https://')) {
-    return `wss://${base.slice('https://'.length)}`;
-  }
-  if (base.startsWith('http://')) {
-    return `ws://${base.slice('http://'.length)}`;
-  }
-  return `ws://${base}`;
-};
-
-const WS_BASE_URL = buildWebSocketBaseUrl();
 
 type Listener = (data: any) => void;
 
@@ -238,8 +224,8 @@ class WebSocketService {
       return;
     }
 
-    // Track audio response chunks from OpenAI Realtime
-    if (payload.type === 'response.audio.delta') {
+  // Track audio response chunks from OpenAI Realtime
+    if (payload.type === 'response.audio.delta' || payload.type === 'response.output_audio.delta') {
       if (typeof payload.delta === 'string') {
         this.audioResponseChunks.push(payload.delta);
         this.lastResponseHadAudio = true;
@@ -248,7 +234,7 @@ class WebSocketService {
     }
 
     // Audio response complete — emit accumulated audio for playback
-    if (payload.type === 'response.audio.done') {
+    if (payload.type === 'response.audio.done' || payload.type === 'response.output_audio.done') {
       if (this.audioResponseChunks.length > 0) {
         const fullAudio = this.audioResponseChunks.join('');
         this.emit('audio_response', { audio: fullAudio });
@@ -258,7 +244,10 @@ class WebSocketService {
     }
 
     // Transcript of the assistant's audio response (for chat display)
-    if (payload.type === 'response.audio_transcript.done') {
+    if (
+      payload.type === 'response.audio_transcript.done' ||
+      payload.type === 'response.output_audio_transcript.done'
+    ) {
       const transcript = payload.transcript;
       if (typeof transcript === 'string' && transcript.trim()) {
         this.emit('audio_transcript', { text: transcript.trim() });
@@ -339,7 +328,7 @@ class WebSocketService {
 
     // If any content part is audio, skip text extraction here.
     // The audio_transcript handler will emit the text separately.
-    const hasAudio = parts.some((part: any) => part?.type === 'audio');
+    const hasAudio = parts.some((part: any) => part?.type === 'audio' || part?.type === 'output_audio');
     if (hasAudio) {
       if (itemId) {
         this.assistantMessageIds.add(itemId);
@@ -356,6 +345,10 @@ class WebSocketService {
     for (const part of parts) {
       if (typeof part?.text === 'string' && part.text.trim()) {
         texts.push(part.text.trim());
+        continue;
+      }
+      if (typeof part?.output_text === 'string' && part.output_text.trim()) {
+        texts.push(part.output_text.trim());
         continue;
       }
       if (typeof part?.transcript === 'string' && part.transcript.trim()) {

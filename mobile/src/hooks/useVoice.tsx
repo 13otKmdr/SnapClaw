@@ -29,9 +29,24 @@ type WebSpeechRecognitionInstance = {
 };
 
 type WebSpeechRecognitionCtor = new () => WebSpeechRecognitionInstance;
+type WebMediaStreamTrack = { stop: () => void };
+type WebMediaStream = { getTracks: () => WebMediaStreamTrack[] };
+type WebMediaDevices = {
+  getUserMedia?: (constraints: { audio: boolean }) => Promise<WebMediaStream>;
+};
+type WebNavigator = {
+  mediaDevices?: WebMediaDevices;
+  brave?: {
+    isBrave?: () => Promise<boolean>;
+  };
+};
 
 type WebWindow = {
-  navigator?: { mediaDevices?: { getUserMedia?: unknown } };
+  isSecureContext?: boolean;
+  location?: {
+    hostname?: string;
+  };
+  navigator?: WebNavigator;
   speechSynthesis?: {
     cancel: () => void;
     speak: (utterance: unknown) => void;
@@ -109,6 +124,8 @@ const EXPO_FALLBACK_MAX_TURN_MS = 6500;
 const TTS_RATE = 0.92;
 const TTS_PITCH = 1.0;
 const PREFERRED_VOICE_HINTS = ['enhanced', 'premium', 'neural', 'natural', 'samantha', 'ava', 'victoria'];
+const WEB_SPEECH_FATAL_ERRORS = new Set(['not-allowed', 'service-not-allowed']);
+const WEB_SPEECH_RESTARTABLE_ERRORS = new Set(['no-speech', 'audio-capture', 'network', 'speech_error']);
 
 // OpenAI Realtime expects PCM16 at 24kHz. Record at 24kHz on iOS for a clean match.
 const RECORDING_OPTIONS: Audio.RecordingOptions = {
@@ -230,6 +247,9 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const wsReconnectAttemptsRef = useRef(0);
   const webRecognitionRef = useRef<WebSpeechRecognitionInstance | null>(null);
   const webSpeechHadResultRef = useRef(false);
+  const webSpeechLastErrorRef = useRef<string | null>(null);
+  const webSpeechLatestTranscriptRef = useRef('');
+  const webSpeechFallbackToRecorderRef = useRef(false);
 
   useEffect(() => {
     stateRef.current = state;
@@ -243,6 +263,92 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (autoRestartTimerRef.current) {
       clearTimeout(autoRestartTimerRef.current);
       autoRestartTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleLiveSessionRestart = useCallback((delayMs: number = 400) => {
+    if (autoRestartTimerRef.current) {
+      return;
+    }
+    autoRestartTimerRef.current = setTimeout(() => {
+      autoRestartTimerRef.current = null;
+      if (
+        !stateRef.current.liveSessionActive ||
+        stateRef.current.isListening ||
+        stateRef.current.isProcessing ||
+        stateRef.current.isSpeaking ||
+        voiceTurnInFlightRef.current
+      ) {
+        return;
+      }
+      void startListeningRef.current?.();
+    }, delayMs);
+  }, []);
+
+  const ensureWebMicrophonePermission = useCallback(async (): Promise<boolean> => {
+    if (Platform.OS !== 'web') {
+      return true;
+    }
+
+    const runtimeWindow = (typeof globalThis !== 'undefined'
+      ? (globalThis as any).window
+      : undefined) as WebWindow | undefined;
+    const secureContextFlag = (typeof globalThis !== 'undefined'
+      ? (globalThis as any).isSecureContext
+      : undefined) as boolean | undefined;
+    const isSecureContext = typeof secureContextFlag === 'boolean'
+      ? secureContextFlag
+      : !!runtimeWindow?.isSecureContext;
+    const host = runtimeWindow?.location?.hostname?.toLowerCase() || '';
+    const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+    if (!isSecureContext && !isLocalhost) {
+      setState((prev) => ({
+        ...prev,
+        isListening: false,
+        liveSessionActive: false,
+        transcript: '',
+        connectionError: 'Microphone capture requires HTTPS (or localhost).',
+      }));
+      return false;
+    }
+
+    const mediaDevices = runtimeWindow?.navigator?.mediaDevices;
+    const getUserMedia = mediaDevices?.getUserMedia;
+    if (typeof getUserMedia !== 'function') {
+      return true;
+    }
+
+    try {
+      // Keep the original mediaDevices receiver to avoid "Illegal invocation"
+      // in browsers that require getUserMedia to be called as a bound method.
+      const stream = await getUserMedia.call(mediaDevices, { audio: true });
+      for (const track of stream.getTracks()) {
+        track.stop();
+      }
+      return true;
+    } catch (error: any) {
+      const name = typeof error?.name === 'string' ? error.name : '';
+      const details = typeof error?.message === 'string' ? error.message : '';
+      const message =
+        name === 'NotAllowedError' || name === 'PermissionDeniedError'
+          ? 'Microphone permission denied in browser settings.'
+        : name === 'NotFoundError'
+            ? 'No microphone detected on this device.'
+        : name === 'NotReadableError'
+              ? 'Microphone is busy in another app.'
+        : name === 'TypeError'
+                ? 'Browser could not start microphone capture. Check Brave Shields and mic permissions for this site.'
+              : name === 'SecurityError'
+                ? 'Microphone capture requires HTTPS (or localhost).'
+                : 'Unable to access microphone from the browser.';
+      setState((prev) => ({
+        ...prev,
+        isListening: false,
+        liveSessionActive: false,
+        transcript: '',
+        connectionError: details ? `${message} (${details})` : message,
+      }));
+      return false;
     }
   }, []);
 
@@ -945,10 +1051,13 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (Platform.OS === 'web') {
         const webWindow = (typeof globalThis !== 'undefined' ? (globalThis as any).window : undefined) as WebWindow | undefined;
         const RecognitionCtor = webWindow?.webkitSpeechRecognition || webWindow?.SpeechRecognition;
-        if (RecognitionCtor) {
+        const isBraveBrowser = !!webWindow?.navigator?.brave;
+        if (RecognitionCtor && !isBraveBrowser && !webSpeechFallbackToRecorderRef.current) {
           const recognition = new RecognitionCtor();
           webRecognitionRef.current = recognition;
           webSpeechHadResultRef.current = false;
+          webSpeechLastErrorRef.current = null;
+          webSpeechLatestTranscriptRef.current = '';
 
           recognition.lang = 'en-US';
           recognition.continuous = false;
@@ -956,7 +1065,15 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           recognition.maxAlternatives = 1;
 
           recognition.onstart = () => {
-            setState((prev) => ({ ...prev, isListening: true, transcript: 'Listening...' }));
+            webSpeechLastErrorRef.current = null;
+            setState((prev) => ({
+              ...prev,
+              isListening: true,
+              transcript: 'Listening...',
+              connectionError: prev.connectionError?.startsWith('Speech recognition error')
+                ? null
+                : prev.connectionError,
+            }));
           };
 
           recognition.onresult = (event: any) => {
@@ -973,11 +1090,13 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             }
 
             if (interimText) {
+              webSpeechLatestTranscriptRef.current = interimText;
               setState((prev) => ({ ...prev, transcript: interimText }));
             }
 
             if (finalText && !voiceTurnInFlightRef.current) {
               webSpeechHadResultRef.current = true;
+              webSpeechLatestTranscriptRef.current = finalText;
               voiceTurnInFlightRef.current = true;
               setState((prev) => ({ ...prev, transcript: finalText, isListening: false }));
               recognition.stop();
@@ -987,13 +1106,46 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
           recognition.onerror = (event) => {
             const err = typeof event?.error === 'string' ? event.error : 'speech_error';
+            webSpeechLastErrorRef.current = err;
+            if (err === 'network' || err === 'audio-capture') {
+              // Some browsers (notably Brave) expose SpeechRecognition but fail to
+              // produce transcripts reliably. Switch to recorder mode for stability.
+              webSpeechFallbackToRecorderRef.current = true;
+              setState((prev) => ({
+                ...prev,
+                isListening: false,
+                transcript: '',
+                connectionError: 'Browser speech recognition unavailable. Switching to recorder mode.',
+              }));
+              try {
+                recognition.abort();
+              } catch {
+                // noop
+              }
+              return;
+            }
+            if (WEB_SPEECH_FATAL_ERRORS.has(err)) {
+              setState((prev) => ({
+                ...prev,
+                isListening: false,
+                transcript: '',
+                connectionError: err === 'not-allowed'
+                  ? 'Microphone blocked. Allow mic access and use an HTTPS page (or localhost).'
+                  : 'Speech recognition unavailable in this browser/session',
+              }));
+              return;
+            }
+            if (WEB_SPEECH_RESTARTABLE_ERRORS.has(err)) {
+              setState((prev) => ({ ...prev, isListening: true, transcript: 'Listening...' }));
+              return;
+            }
             if (err !== 'aborted') {
               setState((prev) => ({
                 ...prev,
                 isListening: false,
                 transcript: '',
                 connectionError: err === 'not-allowed'
-                  ? 'Microphone access denied in Safari'
+                  ? 'Microphone blocked. Allow mic access and use an HTTPS page (or localhost).'
                   : `Speech recognition error: ${err}`,
               }));
             }
@@ -1001,13 +1153,33 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
           recognition.onend = () => {
             webRecognitionRef.current = null;
+            const latestTranscript = webSpeechLatestTranscriptRef.current.trim();
+            const lastError = webSpeechLastErrorRef.current;
+            const canRestart = !lastError || WEB_SPEECH_RESTARTABLE_ERRORS.has(lastError);
+            const shouldSendLatestTranscript =
+              !webSpeechHadResultRef.current &&
+              !voiceTurnInFlightRef.current &&
+              !lastError &&
+              latestTranscript.length > 0;
+            if (shouldSendLatestTranscript) {
+              webSpeechHadResultRef.current = true;
+              voiceTurnInFlightRef.current = true;
+              setState((prev) => ({ ...prev, isListening: false, transcript: latestTranscript }));
+              sendMessage(latestTranscript).catch(() => undefined);
+            }
             const shouldRestart =
               stateRef.current.liveSessionActive &&
               !stateRef.current.isProcessing &&
               !stateRef.current.isSpeaking &&
               !voiceTurnInFlightRef.current &&
-              !webSpeechHadResultRef.current;
-            setState((prev) => ({ ...prev, isListening: false, transcript: '' }));
+              !webSpeechHadResultRef.current &&
+              canRestart;
+            if (shouldRestart) {
+              // Keep the UI in a listening state while restarting recognition to avoid pulse flicker.
+              setState((prev) => ({ ...prev, isListening: true, transcript: 'Listening...' }));
+            } else {
+              setState((prev) => ({ ...prev, isListening: false, transcript: '' }));
+            }
             if (shouldRestart) {
               autoRestartTimerRef.current = setTimeout(() => {
                 autoRestartTimerRef.current = null;
@@ -1016,6 +1188,8 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 }
               }, 250);
             }
+            webSpeechLastErrorRef.current = null;
+            webSpeechLatestTranscriptRef.current = '';
           };
 
           recognition.start();
@@ -1059,7 +1233,12 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
-        setState((prev) => ({ ...prev, isListening: false, liveSessionActive: false }));
+        setState((prev) => ({
+          ...prev,
+          isListening: false,
+          transcript: '',
+          connectionError: 'Microphone permission is required to start live voice.',
+        }));
         Alert.alert('Microphone Permission Needed', 'Please allow microphone access to record voice input.');
         return;
       }
@@ -1081,11 +1260,22 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       }, EXPO_FALLBACK_MAX_TURN_MS);
       setState((prev) => ({ ...prev, transcript: 'Listening...' }));
-    } catch {
+    } catch (error: any) {
       voiceTurnInFlightRef.current = false;
-      setState((prev) => ({ ...prev, isListening: false, liveSessionActive: false }));
+      const message = typeof error?.message === 'string' && error.message.trim()
+        ? error.message.trim()
+        : 'Microphone startup failed';
+      setState((prev) => ({
+        ...prev,
+        isListening: false,
+        transcript: '',
+        connectionError: `Voice startup issue: ${message}`,
+      }));
+      if (stateRef.current.liveSessionActive) {
+        scheduleLiveSessionRestart(700);
+      }
     }
-  }, [canUseMicrophone, sendMessage, stopListening]);
+  }, [canUseMicrophone, scheduleLiveSessionRestart, sendMessage, stopListening]);
 
   useEffect(() => {
     startListeningRef.current = startListening;
@@ -1104,9 +1294,21 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return;
     }
 
+    const micReady = await ensureWebMicrophonePermission();
+    if (!micReady) {
+      return;
+    }
+
+    if (Platform.OS === 'web') {
+      const runtimeWindow = (typeof globalThis !== 'undefined' ? (globalThis as any).window : undefined) as WebWindow | undefined;
+      if (runtimeWindow?.navigator?.brave) {
+        webSpeechFallbackToRecorderRef.current = true;
+      }
+    }
+
     setState((prev) => ({ ...prev, liveSessionActive: true }));
     await startListening();
-  }, [clearTurnTimers, startListening, stopListening, stopSpeaking]);
+  }, [clearTurnTimers, ensureWebMicrophonePermission, startListening, stopListening, stopSpeaking]);
 
   const confirmAction = useCallback(
     async (confirmed: boolean) => {

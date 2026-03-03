@@ -56,14 +56,15 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
   const statusLabel = isProcessing ? 'Processing your request…'
     : isSpeaking   ? 'Speaking…'
     : isListening  ? 'Listening…'
+    : connectionError ? `Voice issue: ${connectionError}`
     : liveSessionActive ? 'Live session on'
     : isConnected  ? 'Connected'
-    : connectionError   ? `Offline: ${connectionError}`
     : 'Offline — tap retry';
 
   const statusColor = isProcessing ? '#FFA500'
     : isSpeaking   ? '#ff6b6b'
     : isListening  ? '#00e676'
+    : connectionError ? '#ff9f43'
     : liveSessionActive ? '#00e676'
     : isConnected  ? '#7c7cff'
     : '#555';
