@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 
-const DEFAULT_NATIVE_API_URL = 'http://100.89.247.64:8000';
+const DEFAULT_NATIVE_API_URL = 'http://localhost:8000';
 
 type WebRuntime = {
   isSecureContext?: boolean;
@@ -69,6 +69,15 @@ export const getApiBaseUrl = (): string => {
     return webOrigin;
   }
 
+  // For native platforms, warn if using localhost (development only)
+  if (Platform.OS !== 'web' && DEFAULT_NATIVE_API_URL.includes('localhost')) {
+    console.warn(
+      'SnapClaw: Using localhost API URL on native platform. This will only work on iOS simulator or Android emulator. '
+      + 'For physical devices, set EXPO_PUBLIC_API_URL in mobile/.env to your backend IP address. '
+      + 'Example: EXPO_PUBLIC_API_URL=http://192.168.1.100:8000'
+    );
+  }
+
   return DEFAULT_NATIVE_API_URL;
 };
 
@@ -78,5 +87,16 @@ export const getWebSocketBaseUrl = (): string => {
     return toWebSocketBaseUrl(explicitWsUrl);
   }
 
-  return toWebSocketBaseUrl(getApiBaseUrl());
+  const wsUrl = toWebSocketBaseUrl(getApiBaseUrl());
+  
+  // Warn if using localhost WebSocket on native platform
+  if (Platform.OS !== 'web' && (wsUrl.includes('localhost') || wsUrl.includes('127.0.0.1'))) {
+    console.warn(
+      'SnapClaw: Using localhost WebSocket URL on native platform. This will only work on iOS simulator or Android emulator. '
+      + 'For physical devices, set EXPO_PUBLIC_WS_URL in mobile/.env to your backend WebSocket address. '
+      + 'Example: EXPO_PUBLIC_WS_URL=ws://192.168.1.100:8000'
+    );
+  }
+  
+  return wsUrl;
 };

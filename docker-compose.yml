@@ -71,6 +71,7 @@ services:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
     volumes:
       - ./backend:/app/backend:ro
+      - ./backend/requirements.txt:/app/requirements.txt:ro
       - ./logs:/app/logs
     ports:
       - "8000:8000"

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import logging
 import asyncio
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 import tempfile
 import threading
 import base64
