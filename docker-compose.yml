@@ -38,8 +38,11 @@ services:
       # internal Docker network. Override with AGENT_ZERO_URL env var if you
       # want to point at an external instance instead.
       - AGENT_ZERO_URL=${AGENT_ZERO_URL:-http://agent-zero:80}
-      - AGENT_ZERO_EXECUTOR=${AGENT_ZERO_EXECUTOR:-http}
+      - AGENT_ZERO_EXECUTOR=${AGENT_ZERO_EXECUTOR:-a0_legacy}
       - AGENT_ZERO_TIMEOUT_SECONDS=${AGENT_ZERO_TIMEOUT_SECONDS:-30}
+      - AGENT_ZERO_CSRF_PATH=${AGENT_ZERO_CSRF_PATH:-/csrf_token}
+      - AGENT_ZERO_MESSAGE_ASYNC_PATH=${AGENT_ZERO_MESSAGE_ASYNC_PATH:-/message_async}
+      - AGENT_ZERO_POLL_PATH=${AGENT_ZERO_POLL_PATH:-/poll}
       - AGENT_ZERO_CREATE_PATH=${AGENT_ZERO_CREATE_PATH:-/api/task}
       - AGENT_ZERO_STATUS_PATH=${AGENT_ZERO_STATUS_PATH:-/api/task/{task_id}}
       - AGENT_ZERO_UPDATE_PATH=${AGENT_ZERO_UPDATE_PATH:-/api/task/{task_id}}
@@ -110,6 +113,10 @@ services:
       - agent_zero_data:/a0
     environment:
       - AGENT_ZERO_API_KEY=${AGENT_ZERO_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - API_KEY_OPENAI=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - API_KEY_OPENROUTER=${OPENROUTER_API_KEY:-}
     networks:
       - voice-network
     healthcheck:

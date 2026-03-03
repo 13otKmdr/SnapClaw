@@ -32,16 +32,19 @@ type WebSpeechRecognitionCtor = new () => WebSpeechRecognitionInstance;
 type WebMediaStreamTrack = { stop: () => void };
 type WebMediaStream = { getTracks: () => WebMediaStreamTrack[] };
 type WebMediaDevices = {
-  getUserMedia?: (constraints: { audio: boolean }) => Promise<WebMediaStream>;
+  getUserMedia?: (constraints: { audio: boolean | Record<string, unknown> }) => Promise<WebMediaStream>;
 };
 type WebNavigator = {
   mediaDevices?: WebMediaDevices;
+  onLine?: boolean;
   brave?: {
     isBrave?: () => Promise<boolean>;
   };
 };
 
 type WebWindow = {
+  addEventListener?: (event: string, handler: () => void) => void;
+  removeEventListener?: (event: string, handler: () => void) => void;
   isSecureContext?: boolean;
   location?: {
     hostname?: string;
@@ -56,6 +59,8 @@ type WebWindow = {
   webkitSpeechRecognition?: WebSpeechRecognitionCtor;
   SpeechRecognition?: WebSpeechRecognitionCtor;
 };
+
+type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
 interface Message {
   id: string;
@@ -72,6 +77,7 @@ interface VoiceState {
   isSpeaking: boolean;
   liveSessionActive: boolean;
   isConnected: boolean;
+  connectionStatus: ConnectionStatus;
   connectionError: string | null;
   transcript: string;
   streamingText: string;
@@ -126,6 +132,9 @@ const TTS_PITCH = 1.0;
 const PREFERRED_VOICE_HINTS = ['enhanced', 'premium', 'neural', 'natural', 'samantha', 'ava', 'victoria'];
 const WEB_SPEECH_FATAL_ERRORS = new Set(['not-allowed', 'service-not-allowed']);
 const WEB_SPEECH_RESTARTABLE_ERRORS = new Set(['no-speech', 'audio-capture', 'network', 'speech_error']);
+const WS_BACKOFF_BASE_MS = 900;
+const WS_BACKOFF_MAX_MS = 20000;
+const WS_MAX_RECONNECT_ATTEMPTS = 8;
 
 // OpenAI Realtime expects PCM16 at 24kHz. Record at 24kHz on iOS for a clean match.
 const RECORDING_OPTIONS: Audio.RecordingOptions = {
@@ -209,6 +218,99 @@ function buildWavFromPcm16(pcm16Base64: string, sampleRate: number = 24000): str
   return btoa(headerBinary + pcmBinary);
 }
 
+function pcm16Base64FromFloat32(samples: Float32Array): string {
+  const bytes = new Uint8Array(samples.length * 2);
+  let offset = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]));
+    const value = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+    const int16 = Math.round(value);
+    bytes[offset++] = int16 & 0xff;
+    bytes[offset++] = (int16 >> 8) & 0xff;
+  }
+
+  let binary = '';
+  const chunkSize = 0x4000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const end = Math.min(i + chunkSize, bytes.length);
+    let chunk = '';
+    for (let j = i; j < end; j++) {
+      chunk += String.fromCharCode(bytes[j]);
+    }
+    binary += chunk;
+  }
+  return btoa(binary);
+}
+
+async function convertWebRecordingToPcm16Base64(uri: string, targetSampleRate: number = 24000): Promise<string> {
+  const runtimeWindow = (typeof globalThis !== 'undefined'
+    ? (globalThis as any).window
+    : undefined) as WebWindow | undefined;
+  const AudioContextCtor = runtimeWindow?.AudioContext || runtimeWindow?.webkitAudioContext;
+  const OfflineAudioContextCtor = (typeof globalThis !== 'undefined'
+    ? (globalThis as any).OfflineAudioContext || (globalThis as any).webkitOfflineAudioContext
+    : undefined) as (new (channels: number, length: number, sampleRate: number) => any) | undefined;
+
+  if (!AudioContextCtor || typeof fetch !== 'function') {
+    throw new Error('Web Audio API unavailable');
+  }
+
+  const sourceResponse = await fetch(uri);
+  if (!sourceResponse.ok) {
+    throw new Error(`Failed to read recording (${sourceResponse.status})`);
+  }
+  const sourceBytes = await sourceResponse.arrayBuffer();
+
+  const decodeCtx = new AudioContextCtor();
+  let decoded: any;
+  try {
+    // Some engines detach the buffer during decode, so pass a copy.
+    decoded = await decodeCtx.decodeAudioData(sourceBytes.slice(0));
+  } finally {
+    try {
+      await decodeCtx.close();
+    } catch {
+      // noop
+    }
+  }
+
+  const channels = Math.max(1, decoded.numberOfChannels || 1);
+  const mono = new Float32Array(decoded.length);
+  for (let ch = 0; ch < channels; ch++) {
+    const channelData = decoded.getChannelData(ch);
+    for (let i = 0; i < decoded.length; i++) {
+      mono[i] += channelData[i] / channels;
+    }
+  }
+
+  let renderedMono: Float32Array = mono;
+  if (decoded.sampleRate !== targetSampleRate) {
+    if (!OfflineAudioContextCtor) {
+      throw new Error('OfflineAudioContext unavailable for resampling');
+    }
+
+    const renderedLength = Math.max(
+      1,
+      Math.ceil((decoded.length / decoded.sampleRate) * targetSampleRate),
+    );
+    const offline = new OfflineAudioContextCtor(1, renderedLength, targetSampleRate);
+    const monoBuffer = offline.createBuffer(1, mono.length, decoded.sampleRate);
+    if (typeof monoBuffer.copyToChannel === 'function') {
+      monoBuffer.copyToChannel(mono, 0);
+    } else {
+      monoBuffer.getChannelData(0).set(mono);
+    }
+    const source = offline.createBufferSource();
+    source.buffer = monoBuffer;
+    source.connect(offline.destination);
+    source.start(0);
+    const rendered = await offline.startRendering();
+    renderedMono = rendered.getChannelData(0);
+  }
+
+  return pcm16Base64FromFloat32(renderedMono);
+}
+
 export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [retryToken, setRetryToken] = useState(0);
   const webWindow = (typeof globalThis !== 'undefined' ? (globalThis as any).window : undefined) as WebWindow | undefined;
@@ -223,6 +325,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     isSpeaking: false,
     liveSessionActive: false,
     isConnected: false,
+    connectionStatus: 'connecting',
     connectionError: null,
     transcript: '',
     streamingText: '',
@@ -250,6 +353,9 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const webSpeechLastErrorRef = useRef<string | null>(null);
   const webSpeechLatestTranscriptRef = useRef('');
   const webSpeechFallbackToRecorderRef = useRef(false);
+  const webAudioContextRef = useRef<any>(null);
+  const webAudioSourceRef = useRef<any>(null);
+  const webAudioUnlockHandlerRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     stateRef.current = state;
@@ -265,6 +371,97 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       autoRestartTimerRef.current = null;
     }
   }, []);
+
+  const clearWsReconnectTimer = useCallback(() => {
+    if (wsReconnectTimerRef.current) {
+      clearTimeout(wsReconnectTimerRef.current);
+      wsReconnectTimerRef.current = null;
+    }
+  }, []);
+
+  const stopWebAudioSource = useCallback(() => {
+    if (!webAudioSourceRef.current) {
+      return;
+    }
+    try {
+      webAudioSourceRef.current.stop?.(0);
+    } catch {
+      // noop
+    }
+    try {
+      webAudioSourceRef.current.disconnect?.();
+    } catch {
+      // noop
+    }
+    webAudioSourceRef.current = null;
+  }, []);
+
+  const clearWebAudioUnlockHandler = useCallback(() => {
+    if (Platform.OS !== 'web' || !webAudioUnlockHandlerRef.current) {
+      return;
+    }
+    const runtimeWindow = (typeof globalThis !== 'undefined'
+      ? (globalThis as any).window
+      : undefined) as WebWindow | undefined;
+    if (!runtimeWindow?.removeEventListener) {
+      webAudioUnlockHandlerRef.current = null;
+      return;
+    }
+    const handler = webAudioUnlockHandlerRef.current;
+    runtimeWindow.removeEventListener('touchstart', handler);
+    runtimeWindow.removeEventListener('touchend', handler);
+    runtimeWindow.removeEventListener('click', handler);
+    runtimeWindow.removeEventListener('keydown', handler);
+    webAudioUnlockHandlerRef.current = null;
+  }, []);
+
+  const ensureWebAudioContextActive = useCallback(async (): Promise<any | null> => {
+    if (Platform.OS !== 'web') {
+      return null;
+    }
+
+    const runtimeWindow = (typeof globalThis !== 'undefined'
+      ? (globalThis as any).window
+      : undefined) as WebWindow | undefined;
+    const AudioContextCtor = runtimeWindow?.AudioContext || runtimeWindow?.webkitAudioContext;
+    if (!AudioContextCtor) {
+      return null;
+    }
+
+    if (!webAudioContextRef.current) {
+      webAudioContextRef.current = new AudioContextCtor();
+    }
+
+    const audioCtx = webAudioContextRef.current;
+    if (audioCtx.state === 'suspended' && typeof audioCtx.resume === 'function') {
+      try {
+        await audioCtx.resume();
+      } catch {
+        // noop
+      }
+    }
+
+    if (
+      audioCtx.state !== 'running'
+      && !webAudioUnlockHandlerRef.current
+      && runtimeWindow?.addEventListener
+    ) {
+      const unlock = () => {
+        void ensureWebAudioContextActive();
+      };
+      webAudioUnlockHandlerRef.current = unlock;
+      runtimeWindow.addEventListener('touchstart', unlock);
+      runtimeWindow.addEventListener('touchend', unlock);
+      runtimeWindow.addEventListener('click', unlock);
+      runtimeWindow.addEventListener('keydown', unlock);
+    }
+
+    if (audioCtx.state === 'running') {
+      clearWebAudioUnlockHandler();
+    }
+
+    return audioCtx;
+  }, [clearWebAudioUnlockHandler]);
 
   const scheduleLiveSessionRestart = useCallback((delayMs: number = 400) => {
     if (autoRestartTimerRef.current) {
@@ -486,6 +683,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (Platform.OS === 'web' && runtimeWindow?.speechSynthesis) {
       runtimeWindow.speechSynthesis.cancel();
     }
+    stopWebAudioSource();
     Speech.stop();
     // Also stop any audio playback
     if (audioPlaybackRef.current) {
@@ -494,16 +692,25 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       audioPlaybackRef.current = null;
     }
     setState((prev) => ({ ...prev, isSpeaking: false }));
-  }, []);
+  }, [stopWebAudioSource]);
 
   /** Play base64 PCM16 audio response from OpenAI Realtime via expo-av. */
   const playAudioResponse = useCallback(async (pcm16Base64: string) => {
     try {
       if (Platform.OS === 'web') {
-        const runtimeWindow = (typeof globalThis !== 'undefined' ? (globalThis as any).window : undefined) as WebWindow | undefined;
-        if (!runtimeWindow) {
-          return;
+        const audioCtx = await ensureWebAudioContextActive();
+        if (!audioCtx) {
+          throw new Error('AudioContext unavailable');
         }
+
+        if (audioCtx.state !== 'running' && typeof audioCtx.resume === 'function') {
+          await audioCtx.resume();
+        }
+        if (audioCtx.state !== 'running') {
+          throw new Error('AudioContext is suspended');
+        }
+
+        stopWebAudioSource();
         const binary = atob(pcm16Base64);
         const pcm = new Int16Array(binary.length / 2);
         for (let i = 0; i < pcm.length; i++) {
@@ -514,11 +721,6 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           pcm[i] = sample;
         }
 
-        const AudioContextCtor = runtimeWindow.AudioContext || runtimeWindow.webkitAudioContext;
-        if (!AudioContextCtor) {
-          throw new Error('AudioContext unavailable');
-        }
-        const audioCtx = new AudioContextCtor();
         const audioBuffer = audioCtx.createBuffer(1, pcm.length, 24000);
         const channel = audioBuffer.getChannelData(0);
         for (let i = 0; i < pcm.length; i++) {
@@ -528,11 +730,14 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const source = audioCtx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioCtx.destination);
+        webAudioSourceRef.current = source;
 
         setState((prev) => ({ ...prev, isSpeaking: true, isProcessing: false }));
         source.onended = () => {
+          if (webAudioSourceRef.current === source) {
+            webAudioSourceRef.current = null;
+          }
           setState((prev) => ({ ...prev, isSpeaking: false }));
-          void audioCtx.close();
           maybeRestartListeningAfterSpeech();
         };
 
@@ -576,7 +781,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setState((prev) => ({ ...prev, isSpeaking: false, isProcessing: false }));
       maybeRestartListeningAfterSpeech();
     }
-  }, [maybeRestartListeningAfterSpeech]);
+  }, [ensureWebAudioContextActive, maybeRestartListeningAfterSpeech, stopWebAudioSource]);
 
   const handleAssistantText = useCallback(
     (text: string) => {
@@ -609,8 +814,16 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     let isMounted = true;
     const realtimeEnabled = websocket.isRealtimeEnabled();
     let healthPollTimer: ReturnType<typeof setInterval> | null = null;
-    const MAX_WS_RETRIES = 2;
-    const WS_RETRY_DELAY_MS = 4000;
+
+    const isBrowserOffline = () =>
+      Platform.OS === 'web' && webWindow?.navigator?.onLine === false;
+
+    const stopHealthPolling = () => {
+      if (healthPollTimer) {
+        clearInterval(healthPollTimer);
+        healthPollTimer = null;
+      }
+    };
 
     const startHealthPolling = () => {
       if (healthPollTimer) return;
@@ -621,14 +834,76 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               setState((prev) => ({
                 ...prev,
                 isConnected: healthy,
-                connectionError: healthy ? null : prev.connectionError,
+                connectionStatus: healthy ? 'connected' : 'disconnected',
+                connectionError: healthy ? null : prev.connectionError || 'Server unreachable — check Settings',
               }));
             }
           })
           .catch(() => {
-            if (isMounted) setState((prev) => ({ ...prev, isConnected: false }));
+            if (isMounted) {
+              setState((prev) => ({
+                ...prev,
+                isConnected: false,
+                connectionStatus: 'disconnected',
+              }));
+            }
           });
       }, 10000);
+    };
+
+    const scheduleReconnect = (reason: string) => {
+      if (!isMounted || !realtimeEnabled || websocket.isConnected()) {
+        return;
+      }
+
+      if (isBrowserOffline()) {
+        clearWsReconnectTimer();
+        setState((prev) => ({
+          ...prev,
+          isConnected: false,
+          connectionStatus: 'disconnected',
+          connectionError: 'No network connection. Waiting to reconnect…',
+        }));
+        return;
+      }
+
+      if (wsReconnectTimerRef.current) {
+        return;
+      }
+
+      wsReconnectAttemptsRef.current += 1;
+      const attempt = wsReconnectAttemptsRef.current;
+      if (attempt > WS_MAX_RECONNECT_ATTEMPTS) {
+        setState((prev) => ({
+          ...prev,
+          isConnected: false,
+          connectionStatus: 'disconnected',
+          connectionError: `${reason}. Voice server offline — using text mode`,
+        }));
+        startHealthPolling();
+        return;
+      }
+
+      const baseDelay = Math.min(
+        WS_BACKOFF_MAX_MS,
+        WS_BACKOFF_BASE_MS * (2 ** (attempt - 1)),
+      );
+      const jitter = Math.floor(Math.random() * Math.max(220, baseDelay * 0.25));
+      const delay = baseDelay + jitter;
+      const seconds = Math.max(1, Math.round(delay / 1000));
+      setState((prev) => ({
+        ...prev,
+        isConnected: false,
+        connectionStatus: 'connecting',
+        connectionError: `${reason}. Reconnecting in ${seconds}s (${attempt}/${WS_MAX_RECONNECT_ATTEMPTS})`,
+      }));
+
+      wsReconnectTimerRef.current = setTimeout(() => {
+        wsReconnectTimerRef.current = null;
+        if (isMounted && !websocket.isConnected()) {
+          void connectWs();
+        }
+      }, delay);
     };
 
     const connectWs = async () => {
@@ -638,6 +913,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           setState((prev) => ({
             ...prev,
             isConnected: healthy,
+            connectionStatus: healthy ? 'connected' : 'disconnected',
             connectionError: healthy ? null : 'Server unreachable — check Settings',
           }));
           if (!healthy) startHealthPolling();
@@ -645,42 +921,52 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return;
       }
 
+      if (isBrowserOffline()) {
+        setState((prev) => ({
+          ...prev,
+          isConnected: false,
+          connectionStatus: 'disconnected',
+          connectionError: 'No network connection. Waiting to reconnect…',
+        }));
+        return;
+      }
+
+      clearWsReconnectTimer();
+      setState((prev) => ({
+        ...prev,
+        connectionStatus: 'connecting',
+      }));
+
       try {
         await websocket.connect(state.sessionId);
         if (isMounted) {
           wsReconnectAttemptsRef.current = 0;
-          setState((prev) => ({ ...prev, isConnected: true, connectionError: null }));
+          stopHealthPolling();
+          setState((prev) => ({
+            ...prev,
+            isConnected: true,
+            connectionStatus: 'connected',
+            connectionError: null,
+          }));
         }
       } catch (err: any) {
         if (!isMounted) return;
-        const errorMessage = typeof err?.message === 'string' ? err.message : 'Unable to connect to voice server';
-        wsReconnectAttemptsRef.current += 1;
-        const attempt = wsReconnectAttemptsRef.current;
-        if (attempt <= MAX_WS_RETRIES) {
-          setState((prev) => ({
-            ...prev,
-            isConnected: false,
-            connectionError: `${errorMessage}. Reconnecting… (${attempt}/${MAX_WS_RETRIES})`,
-          }));
-          wsReconnectTimerRef.current = setTimeout(() => {
-            wsReconnectTimerRef.current = null;
-            if (isMounted && !websocket.isConnected()) void connectWs();
-          }, WS_RETRY_DELAY_MS * attempt);
-        } else {
-          setState((prev) => ({
-            ...prev,
-            isConnected: false,
-            connectionError: `${errorMessage}. Voice server offline — using text mode`,
-          }));
-          startHealthPolling();
-        }
+        const errorMessage = typeof err?.message === 'string'
+          ? err.message
+          : 'Unable to connect to voice server';
+        setState((prev) => ({
+          ...prev,
+          isConnected: false,
+          connectionStatus: 'disconnected',
+          connectionError: errorMessage,
+        }));
+        scheduleReconnect(errorMessage);
       }
     };
 
     const onResponse = (data: { text?: string; hasAudio?: boolean }) => {
       if (data?.text) {
         if (data.hasAudio) {
-          // Audio will play separately via onAudioResponse. Just add text to chat.
           appendMessage({
             id: createMessageId(),
             type: 'assistant',
@@ -693,20 +979,17 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             streamingText: '',
           }));
         } else {
-          // Text-only response — use device TTS as fallback
           handleAssistantText(data.text);
         }
       }
     };
 
-    /** Play audio response from OpenAI Realtime. */
     const onAudioResponse = (data: { audio: string }) => {
       if (data?.audio) {
         playAudioResponse(data.audio).catch(() => undefined);
       }
     };
 
-    /** Show the assistant's response text in chat (from audio transcript). */
     const onAudioTranscript = (data: { text: string }) => {
       if (data?.text && isMounted) {
         appendMessage({
@@ -723,7 +1006,6 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     };
 
-    /** Update user's placeholder message with actual transcript from OpenAI. */
     const onInputTranscript = (data: { text: string }) => {
       if (data?.text && isMounted) {
         setState((prev) => {
@@ -765,24 +1047,36 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         text: `Connection error: ${message}`,
         timestamp: new Date(),
       });
-      setState((prev) => ({ ...prev, isProcessing: false, connectionError: message, isConnected: false }));
+      setState((prev) => ({
+        ...prev,
+        isProcessing: false,
+        connectionError: message,
+        isConnected: false,
+        connectionStatus: 'disconnected',
+      }));
+      scheduleReconnect(message);
     };
 
     const onDisconnected = () => {
       if (!isMounted) return;
-      setState((prev) => ({ ...prev, isConnected: false }));
-      // Attempt one silent reconnect after unexpected disconnect
-      if (realtimeEnabled && wsReconnectAttemptsRef.current < MAX_WS_RETRIES) {
-        wsReconnectTimerRef.current = setTimeout(() => {
-          wsReconnectTimerRef.current = null;
-          if (isMounted && !websocket.isConnected()) void connectWs();
-        }, WS_RETRY_DELAY_MS);
-      }
+      setState((prev) => ({
+        ...prev,
+        isConnected: false,
+        connectionStatus: 'disconnected',
+      }));
+      scheduleReconnect('Connection dropped');
     };
 
     const onConnected = () => {
       if (isMounted) {
-        setState((prev) => ({ ...prev, isConnected: true }));
+        wsReconnectAttemptsRef.current = 0;
+        clearWsReconnectTimer();
+        setState((prev) => ({
+          ...prev,
+          isConnected: true,
+          connectionStatus: 'connected',
+          connectionError: null,
+        }));
       }
     };
 
@@ -790,6 +1084,28 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (isMounted) {
         setState((prev) => ({ ...prev, isProcessing: false }));
       }
+    };
+
+    const handleOnline = () => {
+      if (!isMounted || !realtimeEnabled) {
+        return;
+      }
+      wsReconnectAttemptsRef.current = 0;
+      clearWsReconnectTimer();
+      void connectWs();
+    };
+
+    const handleOffline = () => {
+      if (!isMounted || !realtimeEnabled) {
+        return;
+      }
+      clearWsReconnectTimer();
+      setState((prev) => ({
+        ...prev,
+        isConnected: false,
+        connectionStatus: 'disconnected',
+        connectionError: 'No network connection. Waiting to reconnect…',
+      }));
     };
 
     connectWs();
@@ -803,20 +1119,12 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       websocket.on('connected', onConnected);
       websocket.on('disconnected', onDisconnected);
       websocket.on('response_done', onResponseDone);
+      if (Platform.OS === 'web' && webWindow?.addEventListener) {
+        webWindow.addEventListener('online', handleOnline);
+        webWindow.addEventListener('offline', handleOffline);
+      }
     } else {
-      healthPollTimer = setInterval(() => {
-        ApiService.healthCheck()
-          .then((healthy) => {
-            if (isMounted) {
-              setState((prev) => ({ ...prev, isConnected: healthy }));
-            }
-          })
-          .catch(() => {
-            if (isMounted) {
-              setState((prev) => ({ ...prev, isConnected: false }));
-            }
-          });
-      }, 10000);
+      startHealthPolling();
     }
 
     return () => {
@@ -830,11 +1138,8 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
         webRecognitionRef.current = null;
       }
-      if (healthPollTimer) clearInterval(healthPollTimer);
-      if (wsReconnectTimerRef.current) {
-        clearTimeout(wsReconnectTimerRef.current);
-        wsReconnectTimerRef.current = null;
-      }
+      stopHealthPolling();
+      clearWsReconnectTimer();
       if (realtimeEnabled) {
         websocket.off('response', onResponse);
         websocket.off('audio_response', onAudioResponse);
@@ -845,10 +1150,23 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         websocket.off('connected', onConnected);
         websocket.off('disconnected', onDisconnected);
         websocket.off('response_done', onResponseDone);
+        if (Platform.OS === 'web' && webWindow?.removeEventListener) {
+          webWindow.removeEventListener('online', handleOnline);
+          webWindow.removeEventListener('offline', handleOffline);
+        }
         websocket.disconnect();
       }
     };
-  }, [retryToken, state.sessionId, appendMessage, clearTurnTimers, handleAssistantText, playAudioResponse]);
+  }, [
+    appendMessage,
+    clearTurnTimers,
+    clearWsReconnectTimer,
+    handleAssistantText,
+    playAudioResponse,
+    retryToken,
+    state.sessionId,
+    webWindow,
+  ]);
 
   // sendMessage is defined before stopListening so stopListening can call it
   const sendMessage = useCallback(
@@ -902,7 +1220,13 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           text: `Error: ${message}. Please check your connection and retry.`,
           timestamp: new Date(),
         });
-        setState((prev) => ({ ...prev, isProcessing: false, connectionError: message, isConnected: false }));
+        setState((prev) => ({
+          ...prev,
+          isProcessing: false,
+          connectionError: message,
+          isConnected: false,
+          connectionStatus: 'disconnected',
+        }));
         voiceTurnInFlightRef.current = false;
       }
     },
@@ -993,6 +1317,38 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             return;
           }
 
+          // --- WEB REALTIME PATH: convert recording to PCM16 and send via Realtime WS ---
+          if (Platform.OS === 'web' && websocket.isConnected()) {
+            try {
+              const pcm16Base64 = await convertWebRecordingToPcm16Base64(uri);
+              appendMessage({
+                id: createMessageId(),
+                type: 'user',
+                text: '[Voice message]',
+                timestamp: new Date(),
+              });
+              setState((prev) => ({ ...prev, transcript: '' }));
+              websocket.sendAudioBuffer(pcm16Base64);
+              return;
+            } catch {
+              // Fall back to server-side transcription if browser decode/resample fails.
+            }
+
+            const transcript = (await ApiService.transcribeAudio(uri)).trim();
+            if (!transcript) {
+              appendMessage({
+                id: createMessageId(),
+                type: 'system',
+                text: 'I could not hear any speech. Please try again.',
+                timestamp: new Date(),
+              });
+              setState((prev) => ({ ...prev, isProcessing: false, transcript: '' }));
+              return;
+            }
+            await sendMessage(transcript);
+            return;
+          }
+
           // --- FALLBACK PATH: REST API for Android or when WS disconnected ---
           const response = await ApiService.processVoiceAudio(uri, state.sessionId);
           const transcript = typeof response.entities?.transcript === 'string'
@@ -1016,11 +1372,14 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               confirmationPrompt: 'Do you want me to continue?',
             }));
           }
-        } catch {
+        } catch (error: any) {
+          const detail = typeof error?.message === 'string' && error.message.trim()
+            ? error.message.trim()
+            : 'Voice capture failed. Please try again.';
           appendMessage({
             id: createMessageId(),
             type: 'system',
-            text: 'Error: Voice capture failed. Please try again.',
+            text: `Error: ${detail}`,
             timestamp: new Date(),
           });
           setState((prev) => ({ ...prev, isProcessing: false, transcript: '' }));
@@ -1033,7 +1392,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     voiceTurnInFlightRef.current = false;
     setState((prev) => ({ ...prev, isListening: false }));
-  }, [appendMessage, clearTurnTimers, handleAssistantText, state.sessionId]);
+  }, [appendMessage, clearTurnTimers, handleAssistantText, sendMessage, state.sessionId]);
 
   const startListening = useCallback(async () => {
     if (
@@ -1281,6 +1640,17 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     startListeningRef.current = startListening;
   }, [startListening]);
 
+  useEffect(() => (
+    () => {
+      clearWebAudioUnlockHandler();
+      stopWebAudioSource();
+      if (webAudioContextRef.current) {
+        webAudioContextRef.current.close?.().catch(() => undefined);
+        webAudioContextRef.current = null;
+      }
+    }
+  ), [clearWebAudioUnlockHandler, stopWebAudioSource]);
+
   const toggleLiveSession = useCallback(async () => {
     if (stateRef.current.liveSessionActive) {
       clearTurnTimers();
@@ -1304,11 +1674,12 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (runtimeWindow?.navigator?.brave) {
         webSpeechFallbackToRecorderRef.current = true;
       }
+      void ensureWebAudioContextActive();
     }
 
     setState((prev) => ({ ...prev, liveSessionActive: true }));
     await startListening();
-  }, [clearTurnTimers, ensureWebMicrophonePermission, startListening, stopListening, stopSpeaking]);
+  }, [clearTurnTimers, ensureWebAudioContextActive, ensureWebMicrophonePermission, startListening, stopListening, stopSpeaking]);
 
   const confirmAction = useCallback(
     async (confirmed: boolean) => {
@@ -1328,10 +1699,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     stopListening(false);
     websocket.disconnect();
     wsReconnectAttemptsRef.current = 0;
-    if (wsReconnectTimerRef.current) {
-      clearTimeout(wsReconnectTimerRef.current);
-      wsReconnectTimerRef.current = null;
-    }
+    clearWsReconnectTimer();
     setState((prev) => ({
       ...prev,
       messages: [],
@@ -1341,9 +1709,10 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       requiresConfirmation: false,
       confirmationPrompt: null,
       connectionError: null,
+      connectionStatus: 'connecting',
       sessionId: generateSessionId(),
     }));
-  }, [clearTurnTimers, stopListening, stopSpeaking]);
+  }, [clearTurnTimers, clearWsReconnectTimer, stopListening, stopSpeaking]);
 
   const restoreMessages = useCallback((_: RestoredChat, storedMessages: StoredMessage[]) => {
     const mapped: Message[] = storedMessages.map((message) => ({
@@ -1376,18 +1745,16 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const retryConnection = useCallback(() => {
     wsReconnectAttemptsRef.current = 0;
-    if (wsReconnectTimerRef.current) {
-      clearTimeout(wsReconnectTimerRef.current);
-      wsReconnectTimerRef.current = null;
-    }
+    clearWsReconnectTimer();
     websocket.disconnect();
     setState((prev) => ({
       ...prev,
       isConnected: false,
+      connectionStatus: 'connecting',
       connectionError: 'Retrying connection…',
     }));
     setRetryToken((prev) => prev + 1);
-  }, []);
+  }, [clearWsReconnectTimer]);
 
   return (
     <VoiceContext.Provider

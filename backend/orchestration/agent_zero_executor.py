@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import quote
 
 import httpx
@@ -210,6 +211,184 @@ class HttpAgentZeroExecutor(AgentZeroExecutor):
         await self.client.aclose()
 
 
+class A0LegacyAgentZeroExecutor(AgentZeroExecutor):
+    """Executor for Agent Zero legacy UI API (csrf_token + message_async + poll)."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout_seconds: float = 30.0,
+        csrf_path: str = "/csrf_token",
+        message_async_path: str = "/message_async",
+        poll_path: str = "/poll",
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.csrf_path = csrf_path
+        self.message_async_path = message_async_path
+        self.poll_path = poll_path
+        self.client = httpx.AsyncClient(
+            base_url=self.base_url,
+            headers={"Content-Type": "application/json"},
+            timeout=timeout_seconds,
+        )
+        self._csrf_lock = asyncio.Lock()
+        self._csrf_token: Optional[str] = None
+
+    async def _refresh_csrf_token(self) -> str:
+        async with self._csrf_lock:
+            if self._csrf_token:
+                return self._csrf_token
+            response = await self.client.get(self.csrf_path)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict) or not payload.get("token"):
+                raise RuntimeError("Agent Zero csrf token response missing token")
+            self._csrf_token = str(payload["token"])
+            return self._csrf_token
+
+    async def _post_json(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        token = await self._refresh_csrf_token()
+        response = await self.client.post(path, json=payload, headers={"X-CSRF-Token": token})
+        if response.status_code == 403:
+            # CSRF/session can expire. Refresh once and retry.
+            async with self._csrf_lock:
+                self._csrf_token = None
+            token = await self._refresh_csrf_token()
+            response = await self.client.post(path, json=payload, headers={"X-CSRF-Token": token})
+
+        response.raise_for_status()
+        parsed = response.json()
+        if isinstance(parsed, dict):
+            return parsed
+        return {"data": parsed}
+
+    def _build_task_text(
+        self,
+        *,
+        goal: str,
+        context: Optional[str],
+        priority: TaskPriority,
+        metadata: Dict[str, Any],
+    ) -> str:
+        chunks = [goal.strip()]
+        if context and context.strip():
+            chunks.append(f"Additional context:\n{context.strip()}")
+        if priority != "normal":
+            chunks.append(f"Priority: {priority}")
+        if metadata:
+            chunks.append(f"Metadata (JSON):\n{json.dumps(metadata, ensure_ascii=True)}")
+        return "\n\n".join(chunks)
+
+    def _extract_poll_outcome(
+        self, payload: Dict[str, Any]
+    ) -> Tuple[TaskStatus, Optional[str], Optional[str]]:
+        logs = payload.get("logs")
+        if not isinstance(logs, list):
+            logs = []
+
+        last_response_index = -1
+        last_response_text: Optional[str] = None
+        last_error_index = -1
+        last_error_text: Optional[str] = None
+
+        for index, entry in enumerate(logs):
+            if not isinstance(entry, dict):
+                continue
+            entry_type = str(entry.get("type", "")).lower()
+            content = entry.get("content")
+            kvps = entry.get("kvps") if isinstance(entry.get("kvps"), dict) else {}
+
+            if entry_type == "response" and isinstance(content, str) and content.strip():
+                last_response_index = index
+                last_response_text = content.strip()
+
+            if entry_type == "error":
+                last_error_index = index
+                if isinstance(kvps.get("text"), str) and kvps["text"].strip():
+                    last_error_text = kvps["text"].strip()
+                elif isinstance(content, str) and content.strip():
+                    last_error_text = content.strip()
+                else:
+                    last_error_text = "Agent Zero task failed"
+
+        progress_active = bool(payload.get("log_progress_active"))
+        progress_text = str(payload.get("log_progress", "")).strip().lower()
+
+        if last_error_index > last_response_index:
+            return TaskStatus.FAILED, None, last_error_text
+        if progress_active:
+            return TaskStatus.RUNNING, None, None
+        if last_response_text:
+            return TaskStatus.SUCCEEDED, last_response_text, None
+        if "error" in progress_text and last_error_text:
+            return TaskStatus.FAILED, None, last_error_text
+        return TaskStatus.WAITING_INPUT, None, None
+
+    async def create_task(
+        self,
+        *,
+        goal: str,
+        context: Optional[str],
+        priority: TaskPriority,
+        metadata: Dict[str, Any],
+    ) -> ExternalTaskState:
+        context_id = f"a0_{uuid.uuid4().hex}"
+        text = self._build_task_text(
+            goal=goal,
+            context=context,
+            priority=priority,
+            metadata=metadata,
+        )
+        payload = await self._post_json(
+            self.message_async_path,
+            {
+                "text": text,
+                "context": context_id,
+            },
+        )
+        external_task_id = str(payload.get("context") or context_id)
+        return ExternalTaskState(
+            external_task_id=external_task_id,
+            status=TaskStatus.RUNNING,
+            raw=payload,
+        )
+
+    async def get_task_status(self, external_task_id: str) -> ExternalTaskState:
+        payload = await self._post_json(
+            self.poll_path,
+            {
+                "context": external_task_id,
+                "log_from": 0,
+            },
+        )
+        status, result, error = self._extract_poll_outcome(payload)
+        return ExternalTaskState(
+            external_task_id=external_task_id,
+            status=status,
+            result=result,
+            error=error,
+            raw=payload,
+        )
+
+    async def cancel_task(self, external_task_id: str) -> bool:
+        # Legacy API has no explicit cancellation endpoint.
+        return False
+
+    async def update_task(self, external_task_id: str, instruction: str) -> Optional[ExternalTaskState]:
+        await self._post_json(
+            self.message_async_path,
+            {
+                "text": instruction,
+                "context": external_task_id,
+            },
+        )
+        return await self.get_task_status(external_task_id)
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+
 class MockAgentZeroExecutor(AgentZeroExecutor):
     """In-memory simulator used for local development/testing."""
 
@@ -333,6 +512,14 @@ def build_agent_zero_executor_from_env() -> AgentZeroExecutor:
     if mode == "mock":
         delay = float(os.environ.get("AGENT_ZERO_MOCK_DELAY_SECONDS", "5"))
         return MockAgentZeroExecutor(completion_delay_seconds=delay)
+    if mode in {"a0_legacy", "legacy"}:
+        return A0LegacyAgentZeroExecutor(
+            base_url=os.environ.get("AGENT_ZERO_URL", "http://localhost:50001"),
+            timeout_seconds=float(os.environ.get("AGENT_ZERO_TIMEOUT_SECONDS", "30")),
+            csrf_path=os.environ.get("AGENT_ZERO_CSRF_PATH", "/csrf_token"),
+            message_async_path=os.environ.get("AGENT_ZERO_MESSAGE_ASYNC_PATH", "/message_async"),
+            poll_path=os.environ.get("AGENT_ZERO_POLL_PATH", "/poll"),
+        )
 
     return HttpAgentZeroExecutor(
         base_url=os.environ.get("AGENT_ZERO_URL", "http://localhost:50001"),

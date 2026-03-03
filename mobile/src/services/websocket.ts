@@ -73,7 +73,9 @@ class WebSocketService {
           return;
         }
 
-        this.emit('event', data);
+        if (this.hasListeners('event')) {
+          this.emit('event', data);
+        }
         this.handleRealtimeEvent(data);
       };
 
@@ -200,6 +202,10 @@ class WebSocketService {
     this.listeners.get(event)?.forEach((callback) => callback(data));
   }
 
+  private hasListeners(event: string): boolean {
+    return (this.listeners.get(event)?.size || 0) > 0;
+  }
+
   private parseMessage(raw: any): any | null {
     if (typeof raw !== 'string') {
       return null;
@@ -224,7 +230,13 @@ class WebSocketService {
       return;
     }
 
-  // Track audio response chunks from OpenAI Realtime
+    if (payload.type === 'response.created') {
+      this.audioResponseChunks = [];
+      this.lastResponseHadAudio = false;
+      return;
+    }
+
+    // Track audio response chunks from OpenAI Realtime
     if (payload.type === 'response.audio.delta' || payload.type === 'response.output_audio.delta') {
       if (typeof payload.delta === 'string') {
         this.audioResponseChunks.push(payload.delta);
@@ -235,11 +247,12 @@ class WebSocketService {
 
     // Audio response complete — emit accumulated audio for playback
     if (payload.type === 'response.audio.done' || payload.type === 'response.output_audio.done') {
-      if (this.audioResponseChunks.length > 0) {
-        const fullAudio = this.audioResponseChunks.join('');
+      const terminalAudio = typeof payload.audio === 'string' ? payload.audio : '';
+      const fullAudio = `${this.audioResponseChunks.join('')}${terminalAudio}`;
+      if (fullAudio.length > 0) {
         this.emit('audio_response', { audio: fullAudio });
-        this.audioResponseChunks = [];
       }
+      this.audioResponseChunks = [];
       return;
     }
 
@@ -265,8 +278,18 @@ class WebSocketService {
     }
 
     if (payload.type === 'response.done') {
+      if (this.audioResponseChunks.length > 0) {
+        this.emit('audio_response', { audio: this.audioResponseChunks.join('') });
+        this.audioResponseChunks = [];
+      }
       this.emit('response_done', payload);
       // Reset audio flag after response cycle completes
+      this.lastResponseHadAudio = false;
+      return;
+    }
+
+    if (payload.type === 'response.failed' || payload.type === 'response.cancelled') {
+      this.audioResponseChunks = [];
       this.lastResponseHadAudio = false;
       return;
     }

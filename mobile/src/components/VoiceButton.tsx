@@ -1,31 +1,197 @@
 import React from 'react';
-import { View, TouchableOpacity, StyleSheet, Animated } from 'react-native';
+import { TouchableOpacity, StyleSheet, Animated, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useVoice } from '../hooks/useVoice';
 
+type WebMediaStreamTrack = { stop: () => void };
+type WebMediaStream = { getTracks: () => WebMediaStreamTrack[] };
+type WebAudioAnalyser = {
+  fftSize: number;
+  smoothingTimeConstant: number;
+  getByteTimeDomainData: (array: Uint8Array) => void;
+  disconnect?: () => void;
+};
+type WebAudioSource = {
+  connect: (node: unknown) => void;
+  disconnect?: () => void;
+};
+type WebAudioContext = {
+  state?: string;
+  resume?: () => Promise<void>;
+  close?: () => Promise<void>;
+  createAnalyser: () => WebAudioAnalyser;
+  createMediaStreamSource: (stream: WebMediaStream) => WebAudioSource;
+};
+type WebWindow = {
+  navigator?: {
+    mediaDevices?: {
+      getUserMedia?: (constraints: { audio: Record<string, unknown> | boolean }) => Promise<WebMediaStream>;
+    };
+  };
+  AudioContext?: new () => WebAudioContext;
+  webkitAudioContext?: new () => WebAudioContext;
+};
+
 export const VoiceButton: React.FC = () => {
   const { isListening, isProcessing, isSpeaking, liveSessionActive, toggleLiveSession, canUseMicrophone } = useVoice();
-  const [scale] = React.useState(new Animated.Value(1));
-  const pulseRef = React.useRef<Animated.CompositeAnimation | null>(null);
+  const scale = React.useRef(new Animated.Value(1)).current;
+  const meterEnabled = canUseMicrophone && (liveSessionActive || isListening);
+  const meterStreamRef = React.useRef<WebMediaStream | null>(null);
+  const meterAudioCtxRef = React.useRef<WebAudioContext | null>(null);
+  const meterSourceRef = React.useRef<WebAudioSource | null>(null);
+  const meterAnalyserRef = React.useRef<WebAudioAnalyser | null>(null);
+  const meterFrameRef = React.useRef<number | null>(null);
+  const smoothedScaleRef = React.useRef(1);
+
+  const stopVolumeMeter = React.useCallback(() => {
+    if (meterFrameRef.current !== null && typeof globalThis.cancelAnimationFrame === 'function') {
+      globalThis.cancelAnimationFrame(meterFrameRef.current);
+      meterFrameRef.current = null;
+    }
+
+    meterSourceRef.current?.disconnect?.();
+    meterSourceRef.current = null;
+    meterAnalyserRef.current?.disconnect?.();
+    meterAnalyserRef.current = null;
+
+    if (meterStreamRef.current) {
+      for (const track of meterStreamRef.current.getTracks()) {
+        track.stop();
+      }
+      meterStreamRef.current = null;
+    }
+
+    if (meterAudioCtxRef.current) {
+      meterAudioCtxRef.current.close?.().catch(() => undefined);
+      meterAudioCtxRef.current = null;
+    }
+
+    smoothedScaleRef.current = 1;
+    Animated.spring(scale, {
+      toValue: 1,
+      friction: 7,
+      tension: 90,
+      useNativeDriver: true,
+    }).start();
+  }, [scale]);
 
   React.useEffect(() => {
-    if (liveSessionActive || isListening || isSpeaking) {
-      pulseRef.current?.stop();
-      pulseRef.current = Animated.loop(
-        Animated.sequence([
-          Animated.timing(scale, { toValue: 1.1, duration: 500, useNativeDriver: true }),
-          Animated.timing(scale, { toValue: 1, duration: 500, useNativeDriver: true }),
-        ])
-      );
-      pulseRef.current.start();
-    } else {
-      pulseRef.current?.stop();
-      pulseRef.current = null;
-      scale.setValue(1);
-    }
+    let cancelled = false;
+
+    const startVolumeMeter = async () => {
+      if (Platform.OS !== 'web' || !meterEnabled) {
+        stopVolumeMeter();
+        return;
+      }
+
+      const runtimeWindow = (typeof globalThis !== 'undefined'
+        ? (globalThis as any).window
+        : undefined) as WebWindow | undefined;
+      const mediaDevices = runtimeWindow?.navigator?.mediaDevices;
+      const getUserMedia = mediaDevices?.getUserMedia;
+      const AudioContextCtor = runtimeWindow?.AudioContext || runtimeWindow?.webkitAudioContext;
+
+      if (!getUserMedia || !AudioContextCtor) {
+        stopVolumeMeter();
+        return;
+      }
+
+      try {
+        stopVolumeMeter();
+        const stream = await getUserMedia.call(mediaDevices, {
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        if (cancelled) {
+          for (const track of stream.getTracks()) {
+            track.stop();
+          }
+          return;
+        }
+
+        const audioCtx = new AudioContextCtor();
+        if (audioCtx.state === 'suspended' && typeof audioCtx.resume === 'function') {
+          try {
+            await audioCtx.resume();
+          } catch {
+            // noop
+          }
+        }
+
+        const source = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.85;
+        source.connect(analyser);
+
+        const sampleBuffer = new Uint8Array(analyser.fftSize);
+        meterStreamRef.current = stream;
+        meterAudioCtxRef.current = audioCtx;
+        meterSourceRef.current = source;
+        meterAnalyserRef.current = analyser;
+
+        const updateScale = () => {
+          if (!meterAnalyserRef.current) {
+            return;
+          }
+          meterAnalyserRef.current.getByteTimeDomainData(sampleBuffer);
+          let energy = 0;
+          for (let i = 0; i < sampleBuffer.length; i++) {
+            const normalized = (sampleBuffer[i] - 128) / 128;
+            energy += normalized * normalized;
+          }
+          const rms = Math.sqrt(energy / sampleBuffer.length);
+          const boostedLevel = Math.min(1, rms * 5);
+          const targetScale = 1 + boostedLevel * 0.22;
+          const nextScale = smoothedScaleRef.current * 0.7 + targetScale * 0.3;
+          smoothedScaleRef.current = nextScale;
+          scale.setValue(nextScale);
+
+          if (typeof globalThis.requestAnimationFrame === 'function') {
+            meterFrameRef.current = globalThis.requestAnimationFrame(updateScale);
+          }
+        };
+
+        if (typeof globalThis.requestAnimationFrame === 'function') {
+          meterFrameRef.current = globalThis.requestAnimationFrame(updateScale);
+        } else {
+          scale.setValue(1);
+        }
+      } catch {
+        stopVolumeMeter();
+      }
+    };
+
+    void startVolumeMeter();
     return () => {
-      pulseRef.current?.stop();
-      pulseRef.current = null;
+      cancelled = true;
+      stopVolumeMeter();
+    };
+  }, [meterEnabled, scale, stopVolumeMeter]);
+
+  React.useEffect(() => {
+    if (Platform.OS !== 'web' && (liveSessionActive || isListening || isSpeaking)) {
+      Animated.timing(scale, {
+        toValue: 1.06,
+        duration: 120,
+        useNativeDriver: true,
+      }).start();
+      return;
+    }
+
+    if (Platform.OS !== 'web') {
+      Animated.timing(scale, {
+        toValue: 1,
+        duration: 160,
+        useNativeDriver: true,
+      }).start();
+    }
+
+    return () => {
+      // noop
     };
   }, [isListening, isSpeaking, liveSessionActive, scale]);
 

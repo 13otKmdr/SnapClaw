@@ -15,14 +15,14 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { useVoice } from '../hooks/useVoice';
 import { useChats } from '../hooks/useChats';
-import { VoiceButton, MessageBubble, StreamingMessage, ChatListModal } from '../components';
+import { VoiceButton, MessageBubble, StreamingMessage, ChatListModal, ProcessingIndicator } from '../components';
 
 type RootStackParamList = { Home: undefined; Settings: undefined };
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Home'>;
 
 export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
   const {
-    isListening, isProcessing, isSpeaking, liveSessionActive, isConnected,
+    isListening, isProcessing, isSpeaking, liveSessionActive, connectionStatus,
     connectionError, canUseMicrophone, retryConnection,
     transcript, messages, streamingText,
     sendMessage,
@@ -34,6 +34,7 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
   const [textInput, setTextInput] = useState('');
   const [chatModalVisible, setChatModalVisible] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+  const scrollDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // When the user picks a chat, restore its messages
   useEffect(() => {
@@ -43,8 +44,21 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
   }, [setChatSelectedCallback, restoreMessages]);
 
   useEffect(() => {
-    scrollRef.current?.scrollToEnd({ animated: true });
-  }, [messages, streamingText]);
+    if (scrollDebounceRef.current) {
+      clearTimeout(scrollDebounceRef.current);
+    }
+    scrollDebounceRef.current = setTimeout(() => {
+      scrollRef.current?.scrollToEnd({ animated: true });
+      scrollDebounceRef.current = null;
+    }, 80);
+
+    return () => {
+      if (scrollDebounceRef.current) {
+        clearTimeout(scrollDebounceRef.current);
+        scrollDebounceRef.current = null;
+      }
+    };
+  }, [messages.length, streamingText]);
 
   const handleSend = useCallback(() => {
     const t = textInput.trim();
@@ -53,20 +67,26 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
 
   // ── Status ──────────────────────────────────────────────────────────
 
+  const connectionLabel = connectionStatus === 'connecting'
+    ? 'Connecting'
+    : connectionStatus === 'connected'
+      ? 'Connected'
+      : 'Disconnected';
+
   const statusLabel = isProcessing ? 'Processing your request…'
     : isSpeaking   ? 'Speaking…'
     : isListening  ? 'Listening…'
-    : connectionError ? `Voice issue: ${connectionError}`
-    : liveSessionActive ? 'Live session on'
-    : isConnected  ? 'Connected'
-    : 'Offline — tap retry';
+    : connectionError ? `${connectionLabel}: ${connectionError}`
+    : liveSessionActive ? `Live session on · ${connectionLabel}`
+    : connectionLabel;
 
   const statusColor = isProcessing ? '#FFA500'
     : isSpeaking   ? '#ff6b6b'
     : isListening  ? '#00e676'
     : connectionError ? '#ff9f43'
     : liveSessionActive ? '#00e676'
-    : isConnected  ? '#7c7cff'
+    : connectionStatus === 'connected' ? '#7c7cff'
+    : connectionStatus === 'connecting' ? '#f8b64c'
     : '#555';
 
   // ── Render ──────────────────────────────────────────────────────────
@@ -117,7 +137,7 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
         <Text style={[styles.statusLabel, { color: statusColor }]} numberOfLines={1}>
           {statusLabel}
         </Text>
-        {!isConnected && (
+        {connectionStatus === 'disconnected' && (
           <TouchableOpacity
             onPress={retryConnection}
             style={styles.retryBtn}
@@ -171,8 +191,7 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
         ) : null}
         {isProcessing && !streamingText ? (
           <View style={styles.loadingRow}>
-            <ActivityIndicator size="small" color="#7c7cff" />
-            <Text style={styles.loadingText}>Working…</Text>
+            <ProcessingIndicator label="Thinking…" />
           </View>
         ) : null}
       </ScrollView>
