@@ -1,4 +1,5 @@
 """Singleton dependency wiring for orchestration components."""
+
 from __future__ import annotations
 
 import os

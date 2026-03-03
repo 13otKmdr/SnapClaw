@@ -1,4 +1,5 @@
 """HTTP routes for orchestration task lifecycle management."""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -49,7 +50,9 @@ async def list_tasks(
     user: Dict[str, Any] = Depends(get_authenticated_user),
 ) -> TaskListResponse:
     manager = get_task_manager()
-    tasks = await manager.list_tasks(conversation_id=conversation_id, status=status, limit=limit)
+    tasks = await manager.list_tasks(
+        conversation_id=conversation_id, status=status, limit=limit
+    )
     return TaskListResponse(tasks=tasks)
 
 
@@ -60,7 +63,11 @@ async def get_task(
     user: Dict[str, Any] = Depends(get_authenticated_user),
 ) -> TaskResponse:
     manager = get_task_manager()
-    task = await manager.refresh_task_status(task_id) if refresh else await manager.get_task(task_id)
+    task = (
+        await manager.refresh_task_status(task_id)
+        if refresh
+        else await manager.get_task(task_id)
+    )
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return TaskResponse(task=task)

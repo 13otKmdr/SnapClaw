@@ -1,4 +1,5 @@
 """Realtime API proxy that equips a realtime model with Agent Zero task orchestration tools."""
+
 from __future__ import annotations
 
 import asyncio
@@ -81,28 +82,35 @@ def _resolve_provider_and_key() -> Tuple[str, str]:
 
 def _build_realtime_ws_url(provider: str) -> str:
     if provider == "zai":
-        base = os.environ.get("ZAI_REALTIME_URL", "wss://open.bigmodel.cn/api/paas/v4/realtime")
+        base = os.environ.get(
+            "ZAI_REALTIME_URL", "wss://open.bigmodel.cn/api/paas/v4/realtime"
+        )
         model = os.environ.get("ZAI_REALTIME_MODEL", "glm-realtime")
     else:
         base = os.environ.get("OPENAI_REALTIME_URL", "wss://api.openai.com/v1/realtime")
-        model = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17")
+        model = os.environ.get(
+            "OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17"
+        )
 
     query = urlencode({"model": model})
     return f"{base}?{query}"
 
 
 def _build_session_update(conversation_id: str, provider: str) -> Dict[str, Any]:
-    instructions = os.environ.get("REALTIME_ASSISTANT_INSTRUCTIONS", DEFAULT_ASSISTANT_INSTRUCTIONS)
+    instructions = os.environ.get(
+        "REALTIME_ASSISTANT_INSTRUCTIONS", DEFAULT_ASSISTANT_INSTRUCTIONS
+    )
     instructions = f"Conversation ID: {conversation_id}\n{instructions}"
 
     model = (
         os.environ.get("ZAI_REALTIME_MODEL", "glm-realtime")
         if provider == "zai"
-        else os.environ.get("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17")
+        else os.environ.get(
+            "OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17"
+        )
     )
 
     session: Dict[str, Any] = {
-        
         "model": model,
         "modalities": ["text", "audio"],
         "instructions": instructions,
@@ -121,8 +129,17 @@ def _build_session_update(conversation_id: str, provider: str) -> Dict[str, Any]
     if voice:
         session["voice"] = voice
 
-    if os.environ.get("REALTIME_ENABLE_SERVER_VAD", "true").lower() in {"1", "true", "yes"}:
-        session["turn_detection"] = {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 800}
+    if os.environ.get("REALTIME_ENABLE_SERVER_VAD", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        session["turn_detection"] = {
+            "type": "server_vad",
+            "threshold": 0.5,
+            "prefix_padding_ms": 300,
+            "silence_duration_ms": 800,
+        }
 
     return {"type": "session.update", "session": session}
 
@@ -199,7 +216,9 @@ def _log_bytes_frame(direction: str, payload: bytes) -> None:
     )
 
 
-async def _send_upstream_json(upstream: Any, payload: Dict[str, Any], *, direction: str = "proxy->upstream") -> None:
+async def _send_upstream_json(
+    upstream: Any, payload: Dict[str, Any], *, direction: str = "proxy->upstream"
+) -> None:
     raw_text = json.dumps(payload)
     _log_frame(direction, raw_text)
     await upstream.send(raw_text)
@@ -255,7 +274,9 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
             connect_kwargs["extra_headers"] = upstream_headers
 
         async with websockets.connect(upstream_url, **connect_kwargs) as upstream:
-            await _send_upstream_json(upstream, _build_session_update(conversation_id, provider))
+            await _send_upstream_json(
+                upstream, _build_session_update(conversation_id, provider)
+            )
 
             completed_tool_calls: Set[str] = set()
 
@@ -281,7 +302,9 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
                 ),
             ]
 
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED
+            )
 
             for task in pending:
                 task.cancel()
@@ -297,10 +320,14 @@ async def handle_realtime_proxy(websocket: WebSocket, conversation_id: str) -> N
                     raise exc
 
     except WebSocketDisconnect:
-        log.info("realtime_proxy client disconnected conversation_id=%s", conversation_id)
+        log.info(
+            "realtime_proxy client disconnected conversation_id=%s", conversation_id
+        )
         return
     except Exception as exc:
-        log.exception("realtime_proxy failed conversation_id=%s error=%s", conversation_id, exc)
+        log.exception(
+            "realtime_proxy failed conversation_id=%s error=%s", conversation_id, exc
+        )
         await _safe_send_json(websocket, {"type": "proxy.error", "error": str(exc)})
     finally:
         await task_manager.unsubscribe(conversation_id, task_event_queue)
@@ -379,7 +406,11 @@ async def _upstream_to_client(
         elif event_type == "response.done":
             response_active.clear()
 
-        if event_type in {"response.output_item.added", "response.output_item.done", "conversation.item.created"}:
+        if event_type in {
+            "response.output_item.added",
+            "response.output_item.done",
+            "conversation.item.created",
+        }:
             item = event.get("item") or {}
             if item.get("type") == "function_call":
                 call_id = item.get("call_id")
@@ -390,7 +421,9 @@ async def _upstream_to_client(
             call_id = event.get("call_id")
             delta = event.get("delta")
             if call_id and isinstance(delta, str):
-                call_arg_fragments[call_id] = f"{call_arg_fragments.get(call_id, '')}{delta}"
+                call_arg_fragments[call_id] = (
+                    f"{call_arg_fragments.get(call_id, '')}{delta}"
+                )
             continue
 
         if event_type == "response.function_call_arguments.done":
@@ -462,7 +495,9 @@ async def _task_events_to_client(
 
         # Inject task-completion updates into the GPT-4o conversation so the
         # assistant proactively narrates the outcome to the user.
-        task = getattr(event, "task", None) or (event if hasattr(event, "status") else None)
+        task = getattr(event, "task", None) or (
+            event if hasattr(event, "status") else None
+        )
         if task is None:
             continue
 
@@ -477,7 +512,11 @@ async def _task_events_to_client(
         if status == TaskStatus.SUCCEEDED:
             detail = f"Result: {result}" if result else "It completed successfully."
         elif status == TaskStatus.FAILED:
-            detail = f"It failed. Reason: {error}" if error else "It failed with an unknown error."
+            detail = (
+                f"It failed. Reason: {error}"
+                if error
+                else "It failed with an unknown error."
+            )
         else:
             detail = "It was canceled."
 

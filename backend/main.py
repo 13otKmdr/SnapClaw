@@ -1,10 +1,14 @@
 """Voice Interface Backend - FastAPI Server (Agent Zero only)."""
+
 from __future__ import annotations
 
 import os
 import logging
 import asyncio
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 import tempfile
 import threading
 import base64
@@ -15,7 +19,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -37,9 +50,13 @@ from orchestration.routes import router as orchestration_router
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "z-ai/glm-5")
 OPENROUTER_TEXT_MODEL = os.environ.get("OPENROUTER_TEXT_MODEL", "openai/gpt-4o-mini")
-OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_BASE_URL = os.environ.get(
+    "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+)
 OPENROUTER_API_MODE = os.environ.get("OPENROUTER_API_MODE", "auto").strip().lower()
-OPENROUTER_RESPONSES_MODALITIES = os.environ.get("OPENROUTER_RESPONSES_MODALITIES", "text")
+OPENROUTER_RESPONSES_MODALITIES = os.environ.get(
+    "OPENROUTER_RESPONSES_MODALITIES", "text"
+)
 ZAI_API_KEY = os.environ.get("ZAI_API_KEY", "")
 ZAI_MODEL = os.environ.get("ZAI_MODEL", "glm-5")
 ZAI_ASR_MODEL = os.environ.get("ZAI_ASR_MODEL", "glm-asr-2512")
@@ -134,8 +151,6 @@ class CommandRequest(BaseModel):
     params: Optional[Dict[str, Any]] = None
 
 
-
-
 @app.post("/api/auth/register", response_model=Token, tags=["Auth"])
 async def register(user_data: UserCreate):
     if get_user_by_email(user_data.email):
@@ -196,7 +211,9 @@ async def process_voice(
     action = None
     requires_confirmation = False
 
-    if any(word in text for word in ["execute", "run", "agent zero", "task", "delegate"]):
+    if any(
+        word in text for word in ["execute", "run", "agent zero", "task", "delegate"]
+    ):
         intent = "COMMAND"
         entities["action"] = "agent_execute"
         requires_confirmation = True
@@ -245,7 +262,9 @@ async def process_voice_audio(
         log.exception("Unexpected STT error in process-audio path")
 
     text = transcript.lower() if transcript else ""
-    if transcript and any(word in text for word in ["execute", "run", "agent zero", "task", "delegate"]):
+    if transcript and any(
+        word in text for word in ["execute", "run", "agent zero", "task", "delegate"]
+    ):
         intent = "COMMAND"
         entities["action"] = "agent_execute"
         requires_confirmation = True
@@ -266,7 +285,9 @@ async def process_voice_audio(
         history = conversation_history.setdefault(session_id, [])
         history[:] = history[-12:]
         try:
-            response_text = await _call_openrouter_responses_with_audio(history, audio_bytes, filename)
+            response_text = await _call_openrouter_responses_with_audio(
+                history, audio_bytes, filename
+            )
             history.append({"role": "user", "content": transcript or "[Voice message]"})
             history.append({"role": "assistant", "content": response_text})
             history[:] = history[-12:]
@@ -363,7 +384,9 @@ async def execute_agent_task(
 
 
 @app.get("/api/agent/capabilities", tags=["Agent Zero"])
-async def get_agent_capabilities(user: Optional[Dict[str, Any]] = Depends(get_api_key_user)):
+async def get_agent_capabilities(
+    user: Optional[Dict[str, Any]] = Depends(get_api_key_user),
+):
     az = get_agent_zero_client()
     return await az.list_capabilities()
 
@@ -529,7 +552,10 @@ async def _call_openrouter_responses(history: List[Dict[str, str]], model: str) 
         )
         response.raise_for_status()
         data = response.json()
-        return _extract_responses_content(data) or "I received that. What should I do next?"
+        return (
+            _extract_responses_content(data)
+            or "I received that. What should I do next?"
+        )
     except httpx.HTTPStatusError as exc:
         detail = _safe_error_detail(exc.response)
         raise OpenRouterCallError(
@@ -552,7 +578,10 @@ async def _call_openrouter_responses_with_audio(
     encoded_audio = base64.b64encode(audio_bytes).decode("ascii")
     audio_format = _infer_audio_format(filename)
     input_turns = [_history_turn_to_input_text("system", SYSTEM_PROMPT)]
-    input_turns.extend(_history_turn_to_input_text(turn.get("role", ""), turn.get("content", "")) for turn in history)
+    input_turns.extend(
+        _history_turn_to_input_text(turn.get("role", ""), turn.get("content", ""))
+        for turn in history
+    )
     input_turns.append(
         {
             "role": "user",
@@ -580,7 +609,10 @@ async def _call_openrouter_responses_with_audio(
         )
         response.raise_for_status()
         data = response.json()
-        return _extract_responses_content(data) or "I received that. What should I do next?"
+        return (
+            _extract_responses_content(data)
+            or "I received that. What should I do next?"
+        )
     except httpx.HTTPStatusError as exc:
         detail = _safe_error_detail(exc.response)
         raise OpenRouterCallError(
@@ -695,7 +727,9 @@ def _resolve_openrouter_text_model() -> str:
 
 
 def _parse_openrouter_modalities() -> List[str]:
-    modalities = [value.strip().lower() for value in OPENROUTER_RESPONSES_MODALITIES.split(",")]
+    modalities = [
+        value.strip().lower() for value in OPENROUTER_RESPONSES_MODALITIES.split(",")
+    ]
     cleaned = [value for value in modalities if value]
     return cleaned or ["text"]
 
@@ -867,7 +901,9 @@ async def transcribe_audio_bytes(audio_bytes: bytes, filename: str) -> str:
             filename,
             len(audio_bytes),
         )
-        raise RuntimeError(f"Z.AI transcription failed ({exc.response.status_code}). {detail}".strip())
+        raise RuntimeError(
+            f"Z.AI transcription failed ({exc.response.status_code}). {detail}".strip()
+        )
     except Exception as exc:
         raise RuntimeError(f"Z.AI transcription failed: {exc}")
 

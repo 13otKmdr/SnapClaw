@@ -1,4 +1,5 @@
 """Async task manager for orchestrating Agent Zero work from a realtime assistant."""
+
 from __future__ import annotations
 
 import asyncio
@@ -107,7 +108,9 @@ class TaskManager:
         limit: int = 20,
     ) -> List[TaskRecord]:
         await self._ensure_initialized()
-        return await self._task_store.list_tasks(conversation_id=conversation_id, status=status, limit=limit)
+        return await self._task_store.list_tasks(
+            conversation_id=conversation_id, status=status, limit=limit
+        )
 
     async def refresh_task_status(self, task_id: str) -> Optional[TaskRecord]:
         task = await self.get_task(task_id)
@@ -133,7 +136,9 @@ class TaskManager:
 
         if task.external_task_id and task.status not in TERMINAL_TASK_STATUSES:
             try:
-                external = await self._executor.update_task(task.external_task_id, instruction)
+                external = await self._executor.update_task(
+                    task.external_task_id, instruction
+                )
                 if external:
                     await self._apply_external_state(task_id, external)
             except Exception as exc:
@@ -172,7 +177,9 @@ class TaskManager:
             self._subscribers.setdefault(conversation_id, set()).add(queue)
         return queue
 
-    async def unsubscribe(self, conversation_id: str, queue: asyncio.Queue[TaskEvent]) -> None:
+    async def unsubscribe(
+        self, conversation_id: str, queue: asyncio.Queue[TaskEvent]
+    ) -> None:
         async with self._lock:
             subscribers = self._subscribers.get(conversation_id)
             if not subscribers:
@@ -280,7 +287,11 @@ class TaskManager:
         await self._apply_external_state(task_id, external)
 
         latest = await self.get_task(task_id)
-        if latest and latest.status not in TERMINAL_TASK_STATUSES and latest.external_task_id:
+        if (
+            latest
+            and latest.status not in TERMINAL_TASK_STATUSES
+            and latest.external_task_id
+        ):
             await self._start_poller(task_id)
 
     async def _poll_task(self, task_id: str) -> None:
@@ -297,18 +308,24 @@ class TaskManager:
                 continue
 
             try:
-                external = await self._executor.get_task_status(snapshot.external_task_id)
+                external = await self._executor.get_task_status(
+                    snapshot.external_task_id
+                )
             except Exception as exc:
                 consecutive_errors += 1
                 if consecutive_errors >= self._max_poll_errors:
-                    await self._mark_failed(task_id, f"Status polling failed repeatedly: {exc}")
+                    await self._mark_failed(
+                        task_id, f"Status polling failed repeatedly: {exc}"
+                    )
                     return
                 continue
 
             consecutive_errors = 0
             await self._apply_external_state(task_id, external)
 
-    async def _apply_external_state(self, task_id: str, external: ExternalTaskState) -> None:
+    async def _apply_external_state(
+        self, task_id: str, external: ExternalTaskState
+    ) -> None:
         task = await self.get_task(task_id)
         if not task:
             return
@@ -366,7 +383,9 @@ class TaskManager:
         await self._publish(TaskEventKind.FAILED, task)
 
     async def _publish(self, event_kind: TaskEventKind, task: TaskRecord) -> None:
-        event = TaskEvent(type=event_kind, conversation_id=task.conversation_id, task=task)
+        event = TaskEvent(
+            type=event_kind, conversation_id=task.conversation_id, task=task
+        )
         async with self._lock:
             subscribers = list(self._subscribers.get(task.conversation_id, set()))
 

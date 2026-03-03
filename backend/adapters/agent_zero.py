@@ -15,6 +15,7 @@ Agent Zero API reference (from repo):
     snapshot.logs          — list of new log entries since last push
     snapshot.log_progress  — string when working, 0 when idle
 """
+
 import asyncio
 import logging
 from typing import AsyncGenerator
@@ -29,7 +30,6 @@ log = logging.getLogger(__name__)
 
 
 class AgentZeroAdapter(AgentAdapter):
-
     def __init__(self) -> None:
         self._base = settings.agent_zero_url.rstrip("/")
         self._key = settings.agent_zero_api_key
@@ -150,12 +150,14 @@ class AgentZeroAdapter(AgentAdapter):
         try:
             await sio.connect(
                 self._base,
-                auth={"csrf_token": ""},   # no CSRF needed for API-key auth
+                auth={"csrf_token": ""},  # no CSRF needed for API-key auth
                 transports=["websocket"],
                 wait_timeout=10,
             )
         except Exception as exc:
-            log.warning("Could not connect to Agent Zero Socket.IO for streaming: %s", exc)
+            log.warning(
+                "Could not connect to Agent Zero Socket.IO for streaming: %s", exc
+            )
             return
 
         try:
@@ -188,6 +190,7 @@ class AgentZeroAdapter(AgentAdapter):
 # helpers
 # ------------------------------------------------------------------
 
+
 def _extract_log_text(entry: dict | str) -> str:
     """Pull readable text out of an Agent Zero log entry."""
     if isinstance(entry, str):
@@ -195,7 +198,9 @@ def _extract_log_text(entry: dict | str) -> str:
     if isinstance(entry, dict):
         # Agent Zero log entries look like:
         # { "type": "...", "content": "...", "heading": "..." }
-        content = entry.get("content") or entry.get("heading") or entry.get("text") or ""
+        content = (
+            entry.get("content") or entry.get("heading") or entry.get("text") or ""
+        )
         if isinstance(content, list):
             # sometimes content is a list of sub-items
             parts = []

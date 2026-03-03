@@ -1,4 +1,5 @@
 """Agent Zero executor interface with HTTP and mock implementations."""
+
 from __future__ import annotations
 
 import asyncio
@@ -35,7 +36,9 @@ _STATUS_MAP = {
 }
 
 
-def _normalize_status(value: Any, default: TaskStatus = TaskStatus.RUNNING) -> TaskStatus:
+def _normalize_status(
+    value: Any, default: TaskStatus = TaskStatus.RUNNING
+) -> TaskStatus:
     if isinstance(value, TaskStatus):
         return value
     if value is None:
@@ -74,7 +77,9 @@ class AgentZeroExecutor(ABC):
         """Cancel an external task."""
 
     @abstractmethod
-    async def update_task(self, external_task_id: str, instruction: str) -> Optional[ExternalTaskState]:
+    async def update_task(
+        self, external_task_id: str, instruction: str
+    ) -> Optional[ExternalTaskState]:
         """Update a running task, if supported by backend."""
 
     @abstractmethod
@@ -106,7 +111,9 @@ class HttpAgentZeroExecutor(AgentZeroExecutor):
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        self.client = httpx.AsyncClient(base_url=self.base_url, headers=headers, timeout=timeout_seconds)
+        self.client = httpx.AsyncClient(
+            base_url=self.base_url, headers=headers, timeout=timeout_seconds
+        )
 
     def _format_path(self, template: str, task_id: Optional[str] = None) -> str:
         if "{task_id}" not in template:
@@ -115,7 +122,9 @@ class HttpAgentZeroExecutor(AgentZeroExecutor):
             raise ValueError("task_id is required for this path template")
         return template.replace("{task_id}", quote(task_id, safe=""))
 
-    async def _request_json(self, method: str, path: str, *, json_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def _request_json(
+        self, method: str, path: str, *, json_body: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         response = await self.client.request(method, path, json=json_body)
         response.raise_for_status()
         payload = response.json()
@@ -145,7 +154,9 @@ class HttpAgentZeroExecutor(AgentZeroExecutor):
             if exc.response.status_code != 404 or not self.execute_fallback_path:
                 raise
             fallback_payload = {"prompt": goal, "context": context}
-            data = await self._request_json("POST", self.execute_fallback_path, json_body=fallback_payload)
+            data = await self._request_json(
+                "POST", self.execute_fallback_path, json_body=fallback_payload
+            )
 
         external_task_id = str(data.get("task_id") or data.get("id") or uuid.uuid4())
         status = _normalize_status(data.get("status"), default=TaskStatus.RUNNING)
@@ -161,7 +172,9 @@ class HttpAgentZeroExecutor(AgentZeroExecutor):
         path = self._format_path(self.status_path, external_task_id)
         data = await self._request_json("GET", path)
         return ExternalTaskState(
-            external_task_id=str(data.get("task_id") or data.get("id") or external_task_id),
+            external_task_id=str(
+                data.get("task_id") or data.get("id") or external_task_id
+            ),
             status=_normalize_status(data.get("status"), default=TaskStatus.RUNNING),
             result=_extract_result(data),
             error=data.get("error"),
@@ -181,13 +194,17 @@ class HttpAgentZeroExecutor(AgentZeroExecutor):
 
         return False
 
-    async def update_task(self, external_task_id: str, instruction: str) -> Optional[ExternalTaskState]:
+    async def update_task(
+        self, external_task_id: str, instruction: str
+    ) -> Optional[ExternalTaskState]:
         path = self._format_path(self.update_path, external_task_id)
         payload = {"instruction": instruction}
 
         response = await self.client.patch(path, json=payload)
         if response.status_code == 404:
-            fallback = await self.client.post(f"{path.rstrip('/')}/update", json=payload)
+            fallback = await self.client.post(
+                f"{path.rstrip('/')}/update", json=payload
+            )
             if fallback.status_code == 404:
                 return None
             fallback.raise_for_status()
@@ -200,7 +217,9 @@ class HttpAgentZeroExecutor(AgentZeroExecutor):
             return None
 
         return ExternalTaskState(
-            external_task_id=str(data.get("task_id") or data.get("id") or external_task_id),
+            external_task_id=str(
+                data.get("task_id") or data.get("id") or external_task_id
+            ),
             status=_normalize_status(data.get("status"), default=TaskStatus.RUNNING),
             result=_extract_result(data),
             error=data.get("error"),
@@ -249,13 +268,17 @@ class A0LegacyAgentZeroExecutor(AgentZeroExecutor):
 
     async def _post_json(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         token = await self._refresh_csrf_token()
-        response = await self.client.post(path, json=payload, headers={"X-CSRF-Token": token})
+        response = await self.client.post(
+            path, json=payload, headers={"X-CSRF-Token": token}
+        )
         if response.status_code == 403:
             # CSRF/session can expire. Refresh once and retry.
             async with self._csrf_lock:
                 self._csrf_token = None
             token = await self._refresh_csrf_token()
-            response = await self.client.post(path, json=payload, headers={"X-CSRF-Token": token})
+            response = await self.client.post(
+                path, json=payload, headers={"X-CSRF-Token": token}
+            )
 
         response.raise_for_status()
         parsed = response.json()
@@ -277,7 +300,9 @@ class A0LegacyAgentZeroExecutor(AgentZeroExecutor):
         if priority != "normal":
             chunks.append(f"Priority: {priority}")
         if metadata:
-            chunks.append(f"Metadata (JSON):\n{json.dumps(metadata, ensure_ascii=True)}")
+            chunks.append(
+                f"Metadata (JSON):\n{json.dumps(metadata, ensure_ascii=True)}"
+            )
         return "\n\n".join(chunks)
 
     def _extract_poll_outcome(
@@ -299,7 +324,11 @@ class A0LegacyAgentZeroExecutor(AgentZeroExecutor):
             content = entry.get("content")
             kvps = entry.get("kvps") if isinstance(entry.get("kvps"), dict) else {}
 
-            if entry_type == "response" and isinstance(content, str) and content.strip():
+            if (
+                entry_type == "response"
+                and isinstance(content, str)
+                and content.strip()
+            ):
                 last_response_index = index
                 last_response_text = content.strip()
 
@@ -375,7 +404,9 @@ class A0LegacyAgentZeroExecutor(AgentZeroExecutor):
         # Legacy API has no explicit cancellation endpoint.
         return False
 
-    async def update_task(self, external_task_id: str, instruction: str) -> Optional[ExternalTaskState]:
+    async def update_task(
+        self, external_task_id: str, instruction: str
+    ) -> Optional[ExternalTaskState]:
         await self._post_json(
             self.message_async_path,
             {
@@ -463,7 +494,9 @@ class MockAgentZeroExecutor(AgentZeroExecutor):
 
         return ExternalTaskState(
             external_task_id=external_task_id,
-            status=_normalize_status(snapshot.get("status"), default=TaskStatus.RUNNING),
+            status=_normalize_status(
+                snapshot.get("status"), default=TaskStatus.RUNNING
+            ),
             result=snapshot.get("result"),
             error=snapshot.get("error"),
             raw=snapshot,
@@ -479,19 +512,27 @@ class MockAgentZeroExecutor(AgentZeroExecutor):
             task["error"] = None
         return True
 
-    async def update_task(self, external_task_id: str, instruction: str) -> Optional[ExternalTaskState]:
+    async def update_task(
+        self, external_task_id: str, instruction: str
+    ) -> Optional[ExternalTaskState]:
         async with self._lock:
             task = self._tasks.get(external_task_id)
             if not task:
                 return None
             task["updates"].append(instruction)
-            if task["status"] not in (TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED):
+            if task["status"] not in (
+                TaskStatus.SUCCEEDED,
+                TaskStatus.FAILED,
+                TaskStatus.CANCELED,
+            ):
                 task["status"] = TaskStatus.RUNNING
             snapshot = dict(task)
 
         return ExternalTaskState(
             external_task_id=external_task_id,
-            status=_normalize_status(snapshot.get("status"), default=TaskStatus.RUNNING),
+            status=_normalize_status(
+                snapshot.get("status"), default=TaskStatus.RUNNING
+            ),
             result=snapshot.get("result"),
             error=snapshot.get("error"),
             raw=snapshot,
@@ -517,7 +558,9 @@ def build_agent_zero_executor_from_env() -> AgentZeroExecutor:
             base_url=os.environ.get("AGENT_ZERO_URL", "http://localhost:50001"),
             timeout_seconds=float(os.environ.get("AGENT_ZERO_TIMEOUT_SECONDS", "30")),
             csrf_path=os.environ.get("AGENT_ZERO_CSRF_PATH", "/csrf_token"),
-            message_async_path=os.environ.get("AGENT_ZERO_MESSAGE_ASYNC_PATH", "/message_async"),
+            message_async_path=os.environ.get(
+                "AGENT_ZERO_MESSAGE_ASYNC_PATH", "/message_async"
+            ),
             poll_path=os.environ.get("AGENT_ZERO_POLL_PATH", "/poll"),
         )
 
@@ -529,5 +572,7 @@ def build_agent_zero_executor_from_env() -> AgentZeroExecutor:
         status_path=os.environ.get("AGENT_ZERO_STATUS_PATH", "/api/task/{task_id}"),
         cancel_path=os.environ.get("AGENT_ZERO_CANCEL_PATH", "/api/task/{task_id}"),
         update_path=os.environ.get("AGENT_ZERO_UPDATE_PATH", "/api/task/{task_id}"),
-        execute_fallback_path=os.environ.get("AGENT_ZERO_EXECUTE_FALLBACK_PATH", "/api/execute"),
+        execute_fallback_path=os.environ.get(
+            "AGENT_ZERO_EXECUTE_FALLBACK_PATH", "/api/execute"
+        ),
     )

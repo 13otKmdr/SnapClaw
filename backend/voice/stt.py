@@ -3,6 +3,7 @@ Speech-to-text via OpenAI Whisper API.
 Accepts raw audio bytes (any format Whisper supports: m4a, webm, mp4, wav, etc.)
 and returns the transcribed text string.
 """
+
 import io
 import logging
 from openai import AsyncOpenAI
@@ -52,7 +53,9 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.m4a") -> s
             response_format="text",
         )
         # When response_format="text", result is a plain string
-        text = result.strip() if isinstance(result, str) else (result.text or "").strip()
+        text = (
+            result.strip() if isinstance(result, str) else (result.text or "").strip()
+        )
         log.debug("STT: %r", text)
         return text
     except Exception as exc:

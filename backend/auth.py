@@ -1,4 +1,5 @@
 """JWT-based Authentication System."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -24,7 +25,9 @@ Base = declarative_base()
 
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
 if not SECRET_KEY:
-    raise RuntimeError("JWT_SECRET_KEY environment variable is not set. Insecure default values are prohibited.")
+    raise RuntimeError(
+        "JWT_SECRET_KEY environment variable is not set. Insecure default values are prohibited."
+    )
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
@@ -44,7 +47,7 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     def __repr__(self):
-        return f"<User(id=\'{self.id}\', email=\'{self.email}\')>"
+        return f"<User(id='{self.id}', email='{self.email}')>"
 
 
 class APIKey(Base):
@@ -55,10 +58,10 @@ class APIKey(Base):
     user_id = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_used = Column(DateTime, nullable=True)
-    permissions = Column(Text, nullable=False) # Stored as JSON string
+    permissions = Column(Text, nullable=False)  # Stored as JSON string
 
     def __repr__(self):
-        return f"<APIKey(key=\'{self.key}\', user_id=\'{self.user_id}\')>"
+        return f"<APIKey(key='{self.key}', user_id='{self.user_id}')>"
 
 
 class UserCreate(BaseModel):
@@ -93,12 +96,10 @@ DATABASE_URL = f"sqlite+aiosqlite:///{DB_PATH}"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
-
-
 
 
 def hash_password(password: str) -> str:
@@ -111,7 +112,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    expire = datetime.utcnow() + (
+        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -153,7 +156,9 @@ async def get_user_by_email(email: str):
 
 async def create_user(email: str, username: str, password: str) -> User:
     hashed_pw = hash_password(password)
-    new_user = User(id=str(uuid.uuid4()), email=email, username=username, hashed_password=hashed_pw)
+    new_user = User(
+        id=str(uuid.uuid4()), email=email, username=username, hashed_password=hashed_pw
+    )
     async with SessionLocal() as session:
         session.add(new_user)
         await session.commit()
@@ -201,18 +206,28 @@ async def get_api_key_user(
         if token.startswith("vi_"):
             api_key_obj = await verify_api_key(token)
             if api_key_obj:
-                return {"user_id": api_key_obj.user_id, "permissions": json.loads(api_key_obj.permissions)}
+                return {
+                    "user_id": api_key_obj.user_id,
+                    "permissions": json.loads(api_key_obj.permissions),
+                }
         try:
             user = await get_current_user(credentials)
             if user:
-                return {"user_id": user.id, "username": user.username, "permissions": ["voice:process", "agent:execute"]}
+                return {
+                    "user_id": user.id,
+                    "username": user.username,
+                    "permissions": ["voice:process", "agent:execute"],
+                }
         except HTTPException:
             pass
 
     if api_key_str:
         api_key_obj = await verify_api_key(api_key_str)
         if api_key_obj:
-            return {"user_id": api_key_obj.user_id, "permissions": json.loads(api_key_obj.permissions)}
+            return {
+                "user_id": api_key_obj.user_id,
+                "permissions": json.loads(api_key_obj.permissions),
+            }
 
     return None
 

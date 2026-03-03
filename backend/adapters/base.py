@@ -2,12 +2,12 @@
 AgentAdapter — the only interface the relay ever talks to.
 Adding a new agent = new file implementing these two methods.
 """
+
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator
 
 
 class AgentAdapter(ABC):
-
     @abstractmethod
     async def send_message(
         self,
