@@ -54,8 +54,8 @@ async def maybe_compress(chat_id: str) -> None:
             return
 
         # Split: keep first, compress middle, keep tail
-        first = messages[0]
-        tail = messages[-KEEP_TAIL:]
+        first = messages[0]  # noqa: F841
+        tail = messages[-KEEP_TAIL:]  # noqa: F841
         middle = messages[1: len(messages) - KEEP_TAIL]
 
         if not middle:

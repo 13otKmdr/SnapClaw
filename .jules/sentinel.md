@@ -6,3 +6,7 @@
 **Vulnerability:** Core application security variables `JWT_SECRET_KEY` and `APP_SECRET` fell back to known, insecure defaults ("your-super-secret-key-change-in-production" and "change-me") if environment variables were not set.
 **Learning:** Security configurations must follow a "Fail Securely" principle. Defaulting to a weak secret allows the application to start in a vulnerable state without explicit warning, risking total authentication bypass.
 **Prevention:** Critical secret keys should enforce their presence at application initialization by throwing a `RuntimeError` if missing, rather than defaulting to an insecure value.
+## 2025-03-02 - Restrict overly permissive CORS configuration
+**Vulnerability:** The FastAPI backend used `allow_origins=["*"]` along with `allow_credentials=True` in `CORSMiddleware`, which is overly permissive and insecure.
+**Learning:** This could allow any malicious website to make cross-origin requests to the API on behalf of an authenticated user.
+**Prevention:** Always restrict `allow_origins` to a specific list of trusted domains. Use environment variables (e.g. `ALLOWED_ORIGINS`) to configure this securely per environment.
