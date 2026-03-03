@@ -588,7 +588,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       };
 
       const sorted = [...candidates].sort((a: any, b: any) => scoreVoice(b) - scoreVoice(a));
-      const selected = sorted[0];
+      const selected = sorted[0] as any;
       preferredVoiceIdRef.current = (selected?.identifier || selected?.id || undefined) as string | undefined;
       return preferredVoiceIdRef.current;
     } catch {
@@ -672,7 +672,7 @@ export const VoiceProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setState((prev) => ({ ...prev, isSpeaking: false }));
         maybeRestartListeningAfterSpeech();
       },
-      onStop: () => {
+      onStopped: () => {
         setState((prev) => ({ ...prev, isSpeaking: false }));
         maybeRestartListeningAfterSpeech();
       },

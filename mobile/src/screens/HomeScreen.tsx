@@ -10,6 +10,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Alert,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -111,7 +112,16 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
 
         <View style={styles.headerRight}>
           <TouchableOpacity
-            onPress={clearMessages}
+            onPress={() => {
+              Alert.alert(
+                'Clear Chat',
+                'Are you sure you want to clear all messages in this chat? This cannot be undone.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Clear', style: 'destructive', onPress: clearMessages },
+                ]
+              );
+            }}
             style={styles.iconBtn}
             accessibilityRole="button"
             accessibilityLabel="Clear messages"
