@@ -83,7 +83,7 @@ def _build_session_update(conversation_id: str, provider: str) -> Dict[str, Any]
     )
 
     session: Dict[str, Any] = {
-        "type": "realtime",
+        
         "model": model,
         "modalities": ["text", "audio"],
         "instructions": instructions,
