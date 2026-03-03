@@ -22,9 +22,13 @@ voice_router = APIRouter(prefix="/api/voice", tags=["Voice"])
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "z-ai/glm-5")
 OPENROUTER_TEXT_MODEL = os.environ.get("OPENROUTER_TEXT_MODEL", "openai/gpt-4o-mini")
-OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_BASE_URL = os.environ.get(
+    "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+)
 OPENROUTER_API_MODE = os.environ.get("OPENROUTER_API_MODE", "auto").strip().lower()
-OPENROUTER_RESPONSES_MODALITIES = os.environ.get("OPENROUTER_RESPONSES_MODALITIES", "text")
+OPENROUTER_RESPONSES_MODALITIES = os.environ.get(
+    "OPENROUTER_RESPONSES_MODALITIES", "text"
+)
 ZAI_API_KEY = os.environ.get("ZAI_API_KEY", "")
 ZAI_MODEL = os.environ.get("ZAI_MODEL", "glm-5")
 ZAI_ASR_MODEL = os.environ.get("ZAI_ASR_MODEL", "glm-asr-2512")
@@ -45,24 +49,31 @@ SYSTEM_PROMPT = (
 llm_client = httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS)
 conversation_history: Dict[str, List[Dict[str, str]]] = {}
 
+
 class OpenRouterCallError(HTTPException):
     def __init__(self, status_code: int, user_message: str, detail: Any = None):
         super().__init__(status_code=status_code, detail=detail)
         self.user_message = user_message
 
-async def _call_openrouter_responses_with_audio(history: List[Dict[str, str]], audio_bytes: bytes, filename: str) -> str:
+
+async def _call_openrouter_responses_with_audio(
+    history: List[Dict[str, str]], audio_bytes: bytes, filename: str
+) -> str:
     # This is a placeholder for the actual OpenRouter audio processing logic.
     # The original main.py had this function, but its implementation was not provided.
     # For now, it will raise an error.
     raise OpenRouterCallError(500, "OpenRouter audio responses not implemented.")
 
+
 def _model_prefers_responses(model_name: str) -> bool:
     # Placeholder for logic to check if model prefers responses
     return False
 
+
 async def generate_llm_response(session_id: str, text: str) -> str:
     # Placeholder for LLM response generation
     return f"LLM response to: {text}"
+
 
 def generate_response(text: str, intent: str, entities: Dict[str, Any]) -> str:
     # Placeholder for response generation based on intent and entities
@@ -97,7 +108,9 @@ async def process_voice(
     action = None
     requires_confirmation = False
 
-    if any(word in text for word in ["execute", "run", "agent zero", "task", "delegate"]):
+    if any(
+        word in text for word in ["execute", "run", "agent zero", "task", "delegate"]
+    ):
         intent = "COMMAND"
         entities["action"] = "agent_execute"
         requires_confirmation = True
@@ -146,7 +159,9 @@ async def process_voice_audio(
         log.exception("Unexpected STT error in process-audio path")
 
     text = transcript.lower() if transcript else ""
-    if transcript and any(word in text for word in ["execute", "run", "agent zero", "task", "delegate"]):
+    if transcript and any(
+        word in text for word in ["execute", "run", "agent zero", "task", "delegate"]
+    ):
         intent = "COMMAND"
         entities["action"] = "agent_execute"
         requires_confirmation = True
@@ -167,7 +182,9 @@ async def process_voice_audio(
         history = conversation_history.setdefault(session_id, [])
         history[:] = history[-12:]
         try:
-            response_text = await _call_openrouter_responses_with_audio(history, audio_bytes, filename)
+            response_text = await _call_openrouter_responses_with_audio(
+                history, audio_bytes, filename
+            )
             history.append({"role": "user", "content": transcript or "[Voice message]"})
             history.append({"role": "assistant", "content": response_text})
             history[:] = history[-12:]

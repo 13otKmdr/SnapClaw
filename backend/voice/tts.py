@@ -3,6 +3,7 @@ Text-to-speech via OpenAI TTS API.
 Streams MP3 audio chunks so the mobile client can start playing
 before the full response has been synthesised.
 """
+
 import logging
 from typing import AsyncGenerator
 
@@ -26,7 +27,9 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-async def stream_tts(text: str, voice: str | None = None) -> AsyncGenerator[bytes, None]:
+async def stream_tts(
+    text: str, voice: str | None = None
+) -> AsyncGenerator[bytes, None]:
     """
     Yield MP3 audio chunks for the given text.
 
@@ -50,7 +53,7 @@ async def stream_tts(text: str, voice: str | None = None) -> AsyncGenerator[byte
     try:
         async with client.audio.speech.with_streaming_response.create(
             model="tts-1",
-            voice=chosen_voice,     # type: ignore[arg-type]
+            voice=chosen_voice,  # type: ignore[arg-type]
             input=text,
             response_format="mp3",
         ) as response:

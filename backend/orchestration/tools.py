@@ -1,4 +1,5 @@
 """Realtime tool definitions and dispatcher for Agent Zero task orchestration."""
+
 from __future__ import annotations
 
 import json
@@ -27,8 +28,14 @@ def build_realtime_tool_specs() -> List[Dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "goal": {"type": "string", "description": "Task objective to delegate."},
-                    "context": {"type": "string", "description": "Optional additional context for execution."},
+                    "goal": {
+                        "type": "string",
+                        "description": "Task objective to delegate.",
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional additional context for execution.",
+                    },
                     "priority": {
                         "type": "string",
                         "enum": ["low", "normal", "high"],
@@ -52,7 +59,14 @@ def build_realtime_tool_specs() -> List[Dict[str, Any]]:
                 "properties": {
                     "status": {
                         "type": "string",
-                        "enum": ["queued", "running", "waiting_input", "succeeded", "failed", "canceled"],
+                        "enum": [
+                            "queued",
+                            "running",
+                            "waiting_input",
+                            "succeeded",
+                            "failed",
+                            "canceled",
+                        ],
                         "description": "Optional status filter.",
                     },
                     "limit": {
@@ -72,7 +86,10 @@ def build_realtime_tool_specs() -> List[Dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string", "description": "Local task id returned by create_task."},
+                    "task_id": {
+                        "type": "string",
+                        "description": "Local task id returned by create_task.",
+                    },
                 },
                 "required": ["task_id"],
                 "additionalProperties": False,
@@ -86,7 +103,10 @@ def build_realtime_tool_specs() -> List[Dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string", "description": "Local task id."},
-                    "instruction": {"type": "string", "description": "New direction to apply."},
+                    "instruction": {
+                        "type": "string",
+                        "description": "New direction to apply.",
+                    },
                 },
                 "required": ["task_id", "instruction"],
                 "additionalProperties": False,
@@ -156,7 +176,9 @@ class OrchestrationToolRouter:
 
             if name == "update_task":
                 payload = UpdateTaskInput.model_validate(parsed_args)
-                task = await self._task_manager.update_task(payload.task_id, payload.instruction)
+                task = await self._task_manager.update_task(
+                    payload.task_id, payload.instruction
+                )
                 if not task:
                     return {"ok": False, "error": f"Task '{payload.task_id}' not found"}
                 return {"ok": True, "task": task.model_dump(mode="json")}

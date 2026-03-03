@@ -1,4 +1,5 @@
 """Task storage backends for orchestration state persistence."""
+
 from __future__ import annotations
 
 import os
@@ -61,7 +62,8 @@ class InMemoryTaskStore(TaskStore):
         tasks = [
             task.model_copy(deep=True)
             for task in self._tasks.values()
-            if task.conversation_id == conversation_id and (status is None or task.status == status)
+            if task.conversation_id == conversation_id
+            and (status is None or task.status == status)
         ]
         tasks.sort(key=lambda task: task.created_at, reverse=True)
         return tasks[:limit]
@@ -70,7 +72,8 @@ class InMemoryTaskStore(TaskStore):
         active = [
             task.model_copy(deep=True)
             for task in self._tasks.values()
-            if task.status not in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}
+            if task.status
+            not in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}
         ]
         active.sort(key=lambda task: task.created_at)
         return active
@@ -107,9 +110,15 @@ class RedisTaskStore(TaskStore):
 
         pipeline = self._redis.pipeline()
         pipeline.set(self._task_key(task.task_id), task_json)
-        pipeline.zadd(self._conversation_index_key(task.conversation_id), {task.task_id: score})
+        pipeline.zadd(
+            self._conversation_index_key(task.conversation_id), {task.task_id: score}
+        )
 
-        if task.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}:
+        if task.status in {
+            TaskStatus.SUCCEEDED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELED,
+        }:
             pipeline.srem(self._active_index_key, task.task_id)
         else:
             pipeline.sadd(self._active_index_key, task.task_id)
@@ -134,11 +143,15 @@ class RedisTaskStore(TaskStore):
         step = max(limit * 3, 30)
 
         while len(results) < limit:
-            task_ids = await self._redis.zrevrange(self._conversation_index_key(conversation_id), start, start + step - 1)
+            task_ids = await self._redis.zrevrange(
+                self._conversation_index_key(conversation_id), start, start + step - 1
+            )
             if not task_ids:
                 break
 
-            payloads = await self._redis.mget([self._task_key(task_id) for task_id in task_ids])
+            payloads = await self._redis.mget(
+                [self._task_key(task_id) for task_id in task_ids]
+            )
             for payload in payloads:
                 if not payload:
                     continue
@@ -158,8 +171,12 @@ class RedisTaskStore(TaskStore):
         if not task_ids:
             return []
 
-        payloads = await self._redis.mget([self._task_key(task_id) for task_id in task_ids])
-        tasks = [TaskRecord.model_validate_json(payload) for payload in payloads if payload]
+        payloads = await self._redis.mget(
+            [self._task_key(task_id) for task_id in task_ids]
+        )
+        tasks = [
+            TaskRecord.model_validate_json(payload) for payload in payloads if payload
+        ]
         tasks.sort(key=lambda task: task.created_at)
         return tasks
 

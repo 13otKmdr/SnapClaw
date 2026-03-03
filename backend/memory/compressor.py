@@ -10,6 +10,7 @@ Strategy (mirrors Agent Zero's approach):
 The compressed summary is stored on the Chat row and prepended as a
 'system' message when building context for Agent Zero.
 """
+
 import logging
 from openai import AsyncOpenAI
 
@@ -18,8 +19,8 @@ from ..config import settings
 
 log = logging.getLogger(__name__)
 
-COMPRESS_EVERY = 10   # trigger after this many total messages
-KEEP_TAIL = 6         # keep this many recent messages verbatim (3 exchanges)
+COMPRESS_EVERY = 10  # trigger after this many total messages
+KEEP_TAIL = 6  # keep this many recent messages verbatim (3 exchanges)
 
 _SYSTEM_PROMPT = (
     "You are a memory compressor. Given a conversation history, produce a "
@@ -56,15 +57,13 @@ async def maybe_compress(chat_id: str) -> None:
         # Split: keep first, compress middle, keep tail
         first = messages[0]
         tail = messages[-KEEP_TAIL:]
-        middle = messages[1: len(messages) - KEEP_TAIL]
+        middle = messages[1 : len(messages) - KEEP_TAIL]
 
         if not middle:
-            return   # nothing to compress yet
+            return  # nothing to compress yet
 
         # Build the conversation text for the compressor
-        convo_text = "\n".join(
-            f"{m.role.upper()}: {m.text}" for m in middle
-        )
+        convo_text = "\n".join(f"{m.role.upper()}: {m.text}" for m in middle)
 
         client = _get_client()
         response = await client.chat.completions.create(
@@ -116,9 +115,7 @@ async def build_context_for_agent(chat_id: str) -> str:
 
     # Include recent tail (or all if short conversation)
     recent = messages[-KEEP_TAIL:] if len(messages) > KEEP_TAIL else messages
-    recent_text = "\n".join(
-        f"{m.role.upper()}: {m.text}" for m in recent
-    )
+    recent_text = "\n".join(f"{m.role.upper()}: {m.text}" for m in recent)
     parts.append(f"[RECENT MESSAGES]\n{recent_text}")
 
     return "\n\n".join(parts)

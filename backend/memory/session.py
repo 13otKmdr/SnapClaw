@@ -7,6 +7,7 @@ Schema
 chats    (id, name, agent_context_id, summary, created_at, updated_at)
 messages (id, chat_id, role, text, created_at)
 """
+
 import uuid
 import logging
 from dataclasses import dataclass, field
@@ -38,6 +39,10 @@ CREATE TABLE IF NOT EXISTS messages (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+-- Optimize message fetching and chat lists
+CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
+CREATE INDEX IF NOT EXISTS idx_chats_updated_at ON chats(updated_at DESC);
 """
 
 
@@ -95,8 +100,14 @@ class SessionStore:
             await self._ensure_schema(db)
             await db.execute(
                 "INSERT INTO chats VALUES (?,?,?,?,?,?)",
-                (chat.id, chat.name, chat.agent_context_id,
-                 chat.summary, _fmt(chat.created_at), _fmt(chat.updated_at)),
+                (
+                    chat.id,
+                    chat.name,
+                    chat.agent_context_id,
+                    chat.summary,
+                    _fmt(chat.created_at),
+                    _fmt(chat.updated_at),
+                ),
             )
             await db.commit()
         log.debug("Created chat %s (%s)", chat.id, chat.name)
@@ -113,9 +124,9 @@ class SessionStore:
     async def get_chat(self, chat_id: str) -> Optional[Chat]:
         async with aiosqlite.connect(DB_PATH) as db:
             await self._ensure_schema(db)
-            row = await (await db.execute(
-                "SELECT * FROM chats WHERE id=?", (chat_id,)
-            )).fetchone()
+            row = await (
+                await db.execute("SELECT * FROM chats WHERE id=?", (chat_id,))
+            ).fetchone()
         return _row_to_chat(row) if row else None
 
     async def set_agent_context(self, chat_id: str, agent_context_id: str) -> None:
@@ -174,15 +185,18 @@ class SessionStore:
     async def message_count(self, chat_id: str) -> int:
         async with aiosqlite.connect(DB_PATH) as db:
             await self._ensure_schema(db)
-            row = await (await db.execute(
-                "SELECT COUNT(*) FROM messages WHERE chat_id=?", (chat_id,)
-            )).fetchone()
+            row = await (
+                await db.execute(
+                    "SELECT COUNT(*) FROM messages WHERE chat_id=?", (chat_id,)
+                )
+            ).fetchone()
         return row[0] if row else 0
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)

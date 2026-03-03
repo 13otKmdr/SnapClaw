@@ -66,11 +66,9 @@ async def run_migrations_online() -> None:
 
     """
     # Use the DB_PATH from auth.py
-    connectable = AsyncEngine(create_engine(
-        f"sqlite+aiosqlite:///{DB_PATH}",
-        poolclass=NullPool,
-        future=True
-    ))
+    connectable = AsyncEngine(
+        create_engine(f"sqlite+aiosqlite:///{DB_PATH}", poolclass=NullPool, future=True)
+    )
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

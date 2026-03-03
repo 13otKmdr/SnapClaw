@@ -1,4 +1,5 @@
 """Agent Zero Integration - Execute tasks via Agent Zero API."""
+
 from __future__ import annotations
 
 import os
@@ -12,7 +13,9 @@ class AgentZeroIntegration:
     """Agent Zero API client for task execution."""
 
     def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None):
-        self.base_url = base_url or os.environ.get("AGENT_ZERO_URL", "http://localhost:50001")
+        self.base_url = base_url or os.environ.get(
+            "AGENT_ZERO_URL", "http://localhost:50001"
+        )
         self.api_key = api_key or os.environ.get("AGENT_ZERO_API_KEY")
         self.client = httpx.AsyncClient(timeout=300.0)
 
@@ -22,7 +25,9 @@ class AgentZeroIntegration:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    async def execute_task(self, prompt: str, context: Optional[str] = None) -> Dict[str, Any]:
+    async def execute_task(
+        self, prompt: str, context: Optional[str] = None
+    ) -> Dict[str, Any]:
         payload = {
             "prompt": prompt,
             "context": context,
