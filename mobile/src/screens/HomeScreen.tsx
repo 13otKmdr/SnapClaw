@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
@@ -60,6 +61,17 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
     };
   }, [messages.length, streamingText]);
 
+  const handleClearMessages = useCallback(() => {
+    Alert.alert(
+      'Clear Messages',
+      'Are you sure you want to clear all messages in this chat?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Clear', style: 'destructive', onPress: clearMessages }
+      ]
+    );
+  }, [clearMessages]);
+
   const handleSend = useCallback(() => {
     const t = textInput.trim();
     if (t) { sendMessage(t); setTextInput(''); }
@@ -111,7 +123,7 @@ export const HomeScreen: React.FC<{ navigation: Nav }> = ({ navigation }) => {
 
         <View style={styles.headerRight}>
           <TouchableOpacity
-            onPress={clearMessages}
+            onPress={handleClearMessages}
             style={styles.iconBtn}
             accessibilityRole="button"
             accessibilityLabel="Clear messages"
