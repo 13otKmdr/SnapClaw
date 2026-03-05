@@ -53,7 +53,13 @@ export const ChatListModal: React.FC<ChatListModalProps> = ({
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <TouchableOpacity style={styles.backdrop} onPress={onClose} activeOpacity={1} />
+        <TouchableOpacity
+          style={styles.backdrop}
+          onPress={onClose}
+          activeOpacity={1}
+          accessibilityRole="button"
+          accessibilityLabel="Close chat list"
+        />
 
         <View style={styles.sheet}>
           {/* Handle bar */}
@@ -72,6 +78,9 @@ export const ChatListModal: React.FC<ChatListModalProps> = ({
                 <TouchableOpacity
                   style={[styles.chatItem, isActive && styles.chatItemActive]}
                   onPress={() => handleSelect(item.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Chat: ${item.name}`}
+                  accessibilityState={{ selected: isActive }}
                 >
                   <Ionicons
                     name="chatbubble-outline"
@@ -108,8 +117,14 @@ export const ChatListModal: React.FC<ChatListModalProps> = ({
               onChangeText={setNewName}
               onSubmitEditing={handleCreate}
               returnKeyType="done"
+              accessibilityLabel="New chat name"
             />
-            <TouchableOpacity style={styles.createBtn} onPress={handleCreate}>
+            <TouchableOpacity
+              style={styles.createBtn}
+              onPress={handleCreate}
+              accessibilityRole="button"
+              accessibilityLabel="Create chat"
+            >
               <Ionicons name="add" size={22} color="#fff" />
             </TouchableOpacity>
           </View>
