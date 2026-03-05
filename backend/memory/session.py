@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS messages (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+-- Optimize message history retrieval (O(log N) lookup + sorted results instead of O(N) scan + temporary B-tree)
+CREATE INDEX IF NOT EXISTS idx_messages_chat_id_created_at ON messages(chat_id, created_at);
 """
 
 
