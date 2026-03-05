@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import logging
 import asyncio
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 import tempfile
 import threading
 import base64
@@ -19,6 +18,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, Web
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from config import settings
 from auth import (
     Token,
     UserCreate,
@@ -33,6 +33,8 @@ from auth import (
 from integrations.agent_zero import get_agent_zero_client
 from orchestration import handle_realtime_proxy, shutdown_orchestration
 from orchestration.routes import router as orchestration_router
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "z-ai/glm-5")
@@ -86,7 +88,7 @@ app.include_router(orchestration_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
