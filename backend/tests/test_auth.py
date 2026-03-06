@@ -5,17 +5,19 @@ import os
 from datetime import datetime
 
 from main import app
-from auth import get_user_by_email, create_user, authenticate_user, create_access_token, verify_api_key, User, APIKey
+from auth import create_access_token, User, APIKey
 
 client = TestClient(app)
 
 # Mock database functions
 @pytest.fixture
 def mock_db_functions():
-    with patch("auth.get_user_by_email", new_callable=AsyncMock) as mock_get_user_by_email,
-         patch("auth.create_user", new_callable=AsyncMock) as mock_create_user,
-         patch("auth.authenticate_user", new_callable=AsyncMock) as mock_authenticate_user,
-         patch("auth.verify_api_key", new_callable=AsyncMock) as mock_verify_api_key:
+    with (
+        patch("auth.get_user_by_email", new_callable=AsyncMock) as mock_get_user_by_email,
+        patch("auth.create_user", new_callable=AsyncMock) as mock_create_user,
+        patch("auth.authenticate_user", new_callable=AsyncMock) as mock_authenticate_user,
+        patch("auth.verify_api_key", new_callable=AsyncMock) as mock_verify_api_key
+    ):
         yield {
             "get_user_by_email": mock_get_user_by_email,
             "create_user": mock_create_user,
@@ -105,11 +107,12 @@ async def test_create_api_key_success(mock_db_functions):
     # Mock get_api_key_user to return a valid user for authentication
     with patch("auth.get_api_key_user", new_callable=AsyncMock) as mock_get_api_key_user:
         mock_get_api_key_user.return_value = {"user_id": "test_id", "username": "testuser"}
+        token = create_access_token({"sub": "test_id", "email": "test@example.com"})
         response = client.post(
             "/api/auth/api-keys",
             params={"name": "test_key"},
             headers={
-                "Authorization": f"Bearer {create_access_token({"sub": "test_id", "email": "test@example.com"})}"
+                "Authorization": f"Bearer {token}"
             },
         )
         assert response.status_code == 200
@@ -121,10 +124,11 @@ async def test_get_me_success(mock_db_functions):
     # Mock get_api_key_user to return a valid user for authentication
     with patch("auth.get_api_key_user", new_callable=AsyncMock) as mock_get_api_key_user:
         mock_get_api_key_user.return_value = {"user_id": "test_id", "username": "testuser", "email": "test@example.com"}
+        token = create_access_token({"sub": "test_id", "email": "test@example.com"})
         response = client.get(
             "/api/auth/me",
             headers={
-                "Authorization": f"Bearer {create_access_token({"sub": "test_id", "email": "test@example.com"})}"
+                "Authorization": f"Bearer {token}"
             },
         )
         assert response.status_code == 200

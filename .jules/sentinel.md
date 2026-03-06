@@ -1,8 +1,4 @@
-## 2026-02-26 - Critical Auth Bypass in Orchestration
-**Vulnerability:** Orchestration API routes (/api/tasks) were completely unauthenticated, allowing full control over Agent Zero tasks.
-**Learning:** Router dependencies must be explicitly configured or inherited. Including a router in `main.py` via `app.include_router(orchestration_router)` does NOT automatically apply `app` level dependencies unless `dependencies` argument is used in `include_router`.
-**Prevention:** Always verify authentication on new endpoints with integration tests that assert 401 for unauthenticated requests.
-## 2026-02-28 - CRITICAL Hardcoded Secrets in Production Config
-**Vulnerability:** Core application security variables `JWT_SECRET_KEY` and `APP_SECRET` fell back to known, insecure defaults ("your-super-secret-key-change-in-production" and "change-me") if environment variables were not set.
-**Learning:** Security configurations must follow a "Fail Securely" principle. Defaulting to a weak secret allows the application to start in a vulnerable state without explicit warning, risking total authentication bypass.
-**Prevention:** Critical secret keys should enforce their presence at application initialization by throwing a `RuntimeError` if missing, rather than defaulting to an insecure value.
+## 2024-05-18 - Overly Permissive CORS Configuration
+**Vulnerability:** The backend's main FastAPI application used an overly permissive CORS configuration (`allow_origins=["*"]`) combined with `allow_credentials=True`.
+**Learning:** This is a high-priority security risk because it allows any website to make requests to the API, potentially leading to CSRF or data exfiltration. The codebase had `CORS_ORIGINS` defined in `backend/config.py` but it wasn't being used in `backend/main.py`. Furthermore, relying on an application configuration (`settings.cors_origins`) is the standard, secure way to handle CORS origins in production FastAPI applications.
+**Prevention:** Always restrict CORS origins to explicitly trusted domains, especially when `allow_credentials=True` is enabled. Utilize centralized configuration (like `config.py`) to manage environment-specific security settings rather than hardcoding wildcards.
