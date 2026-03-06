@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS messages (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+-- ⚡ Bolt optimization: SQLite does not automatically index foreign keys.
+-- Without this index, getting messages for a chat or cascade deleting a chat
+-- causes a full table scan on the messages table O(N) instead of O(log N).
+CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
 """
 
 
