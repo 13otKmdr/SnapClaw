@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 
 from fastapi import Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -11,7 +11,6 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
 import os
 import json
-import aiosqlite
 import uuid
 from pathlib import Path
 

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import os
 import logging
-import tempfile
-from mimetypes import guess_type
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -13,7 +11,6 @@ from pydantic import BaseModel
 from auth import get_api_key_user
 from voice.stt import transcribe_audio as transcribe_audio_bytes
 from voice.tts import stream_tts
-from config import settings
 
 log = logging.getLogger(__name__)
 
