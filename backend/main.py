@@ -19,6 +19,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, Web
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from config import settings
 from auth import (
     Token,
     UserCreate,
@@ -84,9 +85,10 @@ app = FastAPI(
 
 app.include_router(orchestration_router)
 
+# 🛡️ Sentinel: Restrict CORS origins to prevent CSRF and overly permissive access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
