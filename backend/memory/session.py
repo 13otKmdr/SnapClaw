@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS messages (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+-- Optimization: Add indexes to prevent full table scans on queries with ORDER BY
+-- SQLite does not create indexes for foreign keys automatically.
+CREATE INDEX IF NOT EXISTS idx_chats_updated_at ON chats(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_chat_id_created_at ON messages(chat_id, created_at);
 """
 
 
